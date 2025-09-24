@@ -1,13 +1,14 @@
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import PromptTemplate
-from langchain_core.vectorstores import VectorStoreRetriever
+from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_compressors import FlashrankRerank
-from langchain.retrievers import ContextualCompressionRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
@@ -17,7 +18,14 @@ from pydantic import BaseModel, Field
 from flashrank import Ranker
 from operator import add
 from langgraph.graph import MessagesState
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Any, Coroutine
+import nltk
+import jieba
+import asyncio
+import time
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+import string
 import torch
 import dotenv
 import os
@@ -34,6 +42,7 @@ def load_env():
 
 # 创建LLM
 def init_llm() -> ChatOpenAI:
+    load_env()
     print("Initializing LLM...")
     model_name = os.getenv("MODEL_NAME")
     base_url = os.getenv("OPENAI_BASE_URL")
@@ -62,7 +71,8 @@ def init_embedding_model() -> HuggingFaceEmbeddings:
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2", model_kwargs={"device": device})
 
 # 初始化向量数据库
-def init_vector_store(embeddings: HuggingFaceEmbeddings) -> Chroma:
+def init_vector_store() -> Chroma:
+    embeddings = init_embedding_model()
     print("Initializing vector store...")
     return Chroma(
         collection_name="example_collection",
@@ -71,39 +81,116 @@ def init_vector_store(embeddings: HuggingFaceEmbeddings) -> Chroma:
     )
 
 # 初始化文本分词器
-def init_text_splitter(chunk_size: int = 600, chunk_overlap: int = 100) -> RecursiveCharacterTextSplitter:
+async def init_text_splitter(chunk_size: int = 600, chunk_overlap: int = 100) -> RecursiveCharacterTextSplitter:
     print("Initializing text splitter...")
     return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True)
 
-# 加载文档并获取retriever
-def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma,
-                                k: int = 50) -> dict[str, VectorStoreRetriever | list[str]]:
-    """k: Amount of documents to return (Default: 50, to improve the precision rate)"""
+
+# bm25预处理函数
+def nltk_resource_download():
+    """Download NLTK resources"""
+    print("Downloading NLTK resources...")
+    nltk.download("punkt")
+    nltk.download("stopwords")
+    nltk.download("wordnet")
+stop_words = set(stopwords.words('english') + stopwords.words('chinese'))
+punctuation = set(string.punctuation) | set("，。！？【】（）《》“”‘’：；、—…—")
+lemmatizer = WordNetLemmatizer()
+def is_english_word(s: str) -> bool:
+    return s and 'a' <= s[0].lower() <= 'z'
+def bilingual_preprocess_func(text: str) -> list[str]:
+    """
+    A powerful preprocessing function that supports mixed Chinese and English scenarios
+    """
+    # 1. transfer to lowercase(typically for English)
+    text = text.lower()
+    # 2. use jieba to cut text(useful for both Chinese and English)
+    tokens = jieba.lcut(text, cut_all=False)
+    processed_tokens = []
+    for token in tokens:
+        # 3. filter stop words and punctuation
+        if token in stop_words or token in punctuation:
+            continue
+        # 4. lemmatize English words
+        if is_english_word(token):
+            token = lemmatizer.lemmatize(token)
+        # 5. filter single character(mostly noises)
+        if len(token) > 1:
+            processed_tokens.append(token)
+    return processed_tokens
+
+
+# 加载文档并嵌入向量数据库
+def load_doc_to_vector_store(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma, file_path: str, task_id: int | None = None) -> \
+dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
+    print(f"Loading task <{task_id}>, document: {file_path}...")
+    try:
+        start_time = time.time()
+        loader = PyPDFLoader(file_path)
+        docs = loader.load()
+        all_splits = text_splitter.split_documents(docs)
+        document_ids = vector_store.add_documents(documents=all_splits)
+        end_time = time.time()
+        print(f"Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, time cost: {end_time - start_time:.2f}s")
+        return {"task_id": task_id, "error": None, "document_ids": document_ids}
+    except Exception as e:
+        return {"task_id": task_id, "error": e, "document_ids": None}
+
+
+# 加载文档、设置并返回sparse_retriever和semantic_retriever
+async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma,
+                                sparse_k: int = 30, semantic_k: int = 30) -> dict[
+    str, BaseRetriever | list[str]]:
+    """
+    sparse_k: Amount of documents to return by sparse retriever, which retrieves using keywords (Default: 30, to improve the precision rate)
+    semantic_k: Amount of documents to return by semantic retriever, which is provided by vector store and retrieves using similarity (Default: 30, to improve the precision rate)
+    """
+    print(f"Before adding documents, The number of documents in vector store is {vector_store._collection.count()}")
     all_document_ids = []
+    task_list = []
+    task_id = 1
+    task_id_to_file_path = {}
     while True:
         file_path = input("Enter the file path, only supported .pdf (if ok, input 'done')：")
         if file_path == "done":
             break
         elif os.path.exists(file_path):
-            print("Loading documents...")
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
-            all_splits = text_splitter.split_documents(docs)
-            document_ids = vector_store.add_documents(documents=all_splits)
-            all_document_ids.extend(document_ids)
-            print(f"Done! Added {len(all_splits)} documents to the vector store this time.")
+            # run task in another thread, map the task id to file path, and add task to task list
+            task_id_to_file_path[task_id] = file_path
+            task = asyncio.to_thread(load_doc_to_vector_store, text_splitter, vector_store, file_path, task_id)
+            task_id += 1
+            task_list.append(task)
         else:
             print("File not exist!")
+    # wait for all tasks to complete, get the results and handle the exceptions
+    results = await asyncio.gather(*task_list)
+    for result in results:
+        if result["error"]:
+            print(f"Task <{result['task_id']}> failed \n file path: {task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
+        else:
+            all_document_ids.extend(result["document_ids"])
+    docs_info = vector_store.get()
+    bm25_retriever = BM25Retriever.from_texts(
+        texts=docs_info["documents"], metadatas=docs_info["metadatas"],
+        ids=docs_info["ids"], k=sparse_k, preprocess_func=bilingual_preprocess_func)
+    semantic_retriever = vector_store.as_retriever(search_kwargs={"k": semantic_k})
     print(f"Added {len(all_document_ids)} documents to the vector store in total.\n"
-          f"The number of documents in vector store is {vector_store._collection.count()}.\n"
-          f"Retriever will retrieve {k} original documents.")
-    retriever = vector_store.as_retriever(search_kwargs={"k": k})
-    return {"retriever": retriever, "all_document_ids": all_document_ids}
+          f"The number of documents in vector store is {len(docs_info["ids"])}.\n")
+    return {"sparse_retriever": bm25_retriever, "semantic_retriever": semantic_retriever, "all_document_ids": all_document_ids}
 
 
-# 初始化压缩Retriever，内置rerank
-def init_compression_retriever(base_retriever: VectorStoreRetriever, top_n: int = 7) -> ContextualCompressionRetriever:
-    """top_n: Number of documents to return."""
+# 创建hybrid_retriever，使用RRF进行融合
+def init_hybrid_retriever(sparse_retriever: BaseRetriever, semantic_retriever: BaseRetriever, weights: list[float] = None) -> BaseRetriever:
+    """weights: A list of weights corresponding to the retrievers. Defaults to equal weighting for all retrievers."""
+    if weights is None:
+        weights = [0.5, 0.5]
+    print("Initializing hybrid retriever...")
+    return EnsembleRetriever(retrievers=[sparse_retriever, semantic_retriever], weights=weights)
+
+
+# 初始化CompressionRetriever，内置rerank
+def init_compression_retriever(base_retriever: BaseRetriever, top_n: int = 7) -> BaseRetriever:
+    """top_n: Number of documents to return by CompressionRetriever. Default 7."""
     print("Initializing compression retriever...")
     ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/opt")
     compressor = FlashrankRerank(client=ranker, top_n=top_n)
@@ -201,16 +288,39 @@ def draw_graph(graph: CompiledStateGraph):
 
 
 
+async def init_rag_application() -> dict[str, Any]:
+    init_result = {}
+
+    llm_init_task = asyncio.to_thread(init_llm)
+
+    vector_store_init_task = asyncio.to_thread(init_vector_store)
+    text_splitter_init_task = asyncio.create_task(init_text_splitter())
+    nltk_resource_download_task = asyncio.to_thread(nltk_resource_download)
+    results = await asyncio.gather(vector_store_init_task, text_splitter_init_task, nltk_resource_download_task)
+    init_result["vector_store"] = results[0]
+    init_result["text_splitter"] = results[1]
+
+    retrievers_and_docs_ids = await asyncio.create_task(load_docs_and_get_retriever(text_splitter=init_result["text_splitter"], vector_store=init_result["vector_store"]))
+    init_result["docs_ids"] = retrievers_and_docs_ids["all_document_ids"]
+    hybrid_retriever = init_hybrid_retriever(sparse_retriever=retrievers_and_docs_ids["sparse_retriever"],
+                                             semantic_retriever=retrievers_and_docs_ids["semantic_retriever"])
+    compression_retriever = init_compression_retriever(base_retriever=hybrid_retriever)
+
+    init_result["hybrid_retriever"] = hybrid_retriever
+    init_result["compression_retriever"] = compression_retriever
+    init_result["llm"] = await llm_init_task
+    return init_result
+
+
 if __name__ == "__main__":
-    load_env()
-    llm = init_llm()
-    embeddings = init_embedding_model()
-    vector_store = init_vector_store(embeddings=embeddings)
-    text_splitter = init_text_splitter()
-    retriever_and_docs_ids = load_docs_and_get_retriever(text_splitter=text_splitter, vector_store=vector_store)
-    retriever = retriever_and_docs_ids["retriever"]
-    docs_ids = retriever_and_docs_ids["all_document_ids"]
-    compression_retriever = init_compression_retriever(base_retriever=retriever)
+    init_result = asyncio.run(init_rag_application())
+    llm = init_result["llm"]
+    vector_store = init_result["vector_store"]
+    embeddings = vector_store.embeddings
+    text_splitter = init_result["text_splitter"]
+    docs_ids = init_result["docs_ids"]
+    hybrid_retriever = init_result["hybrid_retriever"]
+    compression_retriever = init_result["compression_retriever"]
 
     tools = [retrieve]
     tools_by_name = {tool.name: tool for tool in tools}
