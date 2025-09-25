@@ -9,7 +9,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_compressors import FlashrankRerank
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
-from langchain_core.tools import tool
+from langchain_core.tools import tool, StructuredTool
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from IPython.display import Image, display
@@ -20,20 +20,22 @@ from operator import add
 from langgraph.graph import MessagesState
 from typing import Annotated, Literal, Any, Coroutine
 import nltk
-import jieba
-import asyncio
-import time
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import string
 import torch
 import dotenv
 import os
+import sys
+import inspect
+import jieba
+import asyncio
+import time
 
 
 # 设置环境变量
 def load_env():
-    print("Loading environment variables...")
+    print("LOAD ENV: Loading environment variables...")
     dotenv.load_dotenv(override=True)
     os.environ["LANGSMITH_TRACING"] = os.getenv("LANGSMITH_TRACING")
     if os.environ["LANGSMITH_TRACING"] == "true":
@@ -43,7 +45,7 @@ def load_env():
 # 创建LLM
 def init_llm() -> ChatOpenAI:
     load_env()
-    print("Initializing LLM...")
+    print("INIT LLM: Initializing LLM...")
     model_name = os.getenv("MODEL_NAME")
     base_url = os.getenv("OPENAI_BASE_URL")
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
@@ -64,7 +66,7 @@ def init_llm() -> ChatOpenAI:
 
 # 初始化嵌入模型
 def init_embedding_model() -> HuggingFaceEmbeddings:
-    print("Initializing embedding model...")
+    print("INIT EMBEDDING MODEL: Initializing embedding model...")
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
@@ -73,7 +75,7 @@ def init_embedding_model() -> HuggingFaceEmbeddings:
 # 初始化向量数据库
 def init_vector_store() -> Chroma:
     embeddings = init_embedding_model()
-    print("Initializing vector store...")
+    print("INIT VECTOR STORE: Initializing vector store...")
     return Chroma(
         collection_name="example_collection",
         embedding_function=embeddings,
@@ -82,14 +84,14 @@ def init_vector_store() -> Chroma:
 
 # 初始化文本分词器
 async def init_text_splitter(chunk_size: int = 600, chunk_overlap: int = 100) -> RecursiveCharacterTextSplitter:
-    print("Initializing text splitter...")
+    print("INIT TEXT SPLITTER: Initializing text splitter...")
     return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True)
 
 
 # bm25预处理函数
 def nltk_resource_download():
     """Download NLTK resources"""
-    print("Downloading NLTK resources...")
+    print("DOWNLOAD NLTK: Downloading NLTK resources...")
     nltk.download("punkt")
     nltk.download("stopwords")
     nltk.download("wordnet")
@@ -123,7 +125,7 @@ def bilingual_preprocess_func(text: str) -> list[str]:
 # 加载文档并嵌入向量数据库
 def load_doc_to_vector_store(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma, file_path: str, task_id: int | None = None) -> \
 dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
-    print(f"Loading task <{task_id}>, document: {file_path}...")
+    print(f"LOADING DOCUMENTS TASK: Loading task <{task_id}>, document: {file_path}...")
     try:
         start_time = time.time()
         loader = PyPDFLoader(file_path)
@@ -131,7 +133,7 @@ dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
         all_splits = text_splitter.split_documents(docs)
         document_ids = vector_store.add_documents(documents=all_splits)
         end_time = time.time()
-        print(f"Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, time cost: {end_time - start_time:.2f}s")
+        print(f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, time cost: {end_time - start_time:.2f}s")
         return {"task_id": task_id, "error": None, "document_ids": document_ids}
     except Exception as e:
         return {"task_id": task_id, "error": e, "document_ids": None}
@@ -145,28 +147,32 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
     sparse_k: Amount of documents to return by sparse retriever, which retrieves using keywords (Default: 30, to improve the precision rate)
     semantic_k: Amount of documents to return by semantic retriever, which is provided by vector store and retrieves using similarity (Default: 30, to improve the precision rate)
     """
-    print(f"Before adding documents, The number of documents in vector store is {vector_store._collection.count()}")
+    print(f"LOADING DOCUMENTS: Before adding documents, The number of documents in vector store is {vector_store._collection.count()}")
+    # download NLTK resources for bilingual preprocessing
+    nltk_resource_download_task = asyncio.to_thread(nltk_resource_download)
     all_document_ids = []
-    task_list = []
-    task_id = 1
-    task_id_to_file_path = {}
+    load_task_list = []
+    load_task_id = 1
+    load_task_id_to_file_path = {}
     while True:
-        file_path = input("Enter the file path, only supported .pdf (if ok, input 'done')：")
+        file_path = input("LOADING DOCUMENTS: Enter the file path, only supported .pdf (if ok, input 'done')：")
         if file_path == "done":
             break
         elif os.path.exists(file_path):
             # run task in another thread, map the task id to file path, and add task to task list
-            task_id_to_file_path[task_id] = file_path
-            task = asyncio.to_thread(load_doc_to_vector_store, text_splitter, vector_store, file_path, task_id)
-            task_id += 1
-            task_list.append(task)
+            load_task_id_to_file_path[load_task_id] = file_path
+            task = asyncio.to_thread(load_doc_to_vector_store, text_splitter, vector_store, file_path, load_task_id)
+            load_task_id += 1
+            load_task_list.append(task)
         else:
-            print("File not exist!")
+            print("LOADING DOCUMENTS: File not exist!")
     # wait for all tasks to complete, get the results and handle the exceptions
-    results = await asyncio.gather(*task_list)
+    results = await asyncio.gather(*load_task_list, nltk_resource_download_task)
     for result in results:
-        if result["error"]:
-            print(f"Task <{result['task_id']}> failed \n file path: {task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
+        if result is None:
+            continue
+        elif result["error"]:
+            print(f"LOADING DOCUMENTS: Task <{result['task_id']}> failed \n file path: {load_task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
         else:
             all_document_ids.extend(result["document_ids"])
     docs_info = vector_store.get()
@@ -174,8 +180,8 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
         texts=docs_info["documents"], metadatas=docs_info["metadatas"],
         ids=docs_info["ids"], k=sparse_k, preprocess_func=bilingual_preprocess_func)
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": semantic_k})
-    print(f"Added {len(all_document_ids)} documents to the vector store in total.\n"
-          f"The number of documents in vector store is {len(docs_info["ids"])}.\n")
+    print(f"LOADING DOCUMENTS: Added {len(all_document_ids)} documents to the vector store in total.\n"
+          f"LOADING DOCUMENTS: The number of documents in vector store is NOW {len(docs_info["ids"])}.")
     return {"sparse_retriever": bm25_retriever, "semantic_retriever": semantic_retriever, "all_document_ids": all_document_ids}
 
 
@@ -184,35 +190,51 @@ def init_hybrid_retriever(sparse_retriever: BaseRetriever, semantic_retriever: B
     """weights: A list of weights corresponding to the retrievers. Defaults to equal weighting for all retrievers."""
     if weights is None:
         weights = [0.5, 0.5]
-    print("Initializing hybrid retriever...")
+    print("INIT HYBRID RETRIEVER: Initializing hybrid retriever...")
     return EnsembleRetriever(retrievers=[sparse_retriever, semantic_retriever], weights=weights)
 
 
 # 初始化CompressionRetriever，内置rerank
 def init_compression_retriever(base_retriever: BaseRetriever, top_n: int = 7) -> BaseRetriever:
     """top_n: Number of documents to return by CompressionRetriever. Default 7."""
-    print("Initializing compression retriever...")
+    print("INIT COMPRESSION RETRIEVER: Initializing compression retriever...")
     ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/opt")
     compressor = FlashrankRerank(client=ranker, top_n=top_n)
     return ContextualCompressionRetriever(base_retriever=base_retriever, base_compressor=compressor)
 
+# 扫描当前模块中的所有StructuredTool对象，并将它们添加到tools列表中
+tools = []
+tools_without_retrieve = []
+tools_by_name = {}
+async def init_tool_infos():
+    print("INIT TOOL INFO: Scanning current module for StructuredTool objects...")
+    current_module = sys.modules['__main__']
+    predicate = lambda member: isinstance(member, StructuredTool)
+    tool_infos = inspect.getmembers(current_module, predicate)
+    for name, tool in tool_infos:
+        tools.append(tool)
+        tools_by_name[tool.name] = tool
+        if tool.name != retrieve.name:
+            tools_without_retrieve.append(tool)
+    print(f"INIT TOOL INFO: Find {len(tools)} tools")
+
+# =========================================================================
 
 # 图状态
 class OverallState(MessagesState):
+    command: Literal["retrieve", "direct"]
     user_question: str
     retrieved_docs: Annotated[list[str], add]
 
-class OutputState(MessagesState):
-    retrieved_docs: Annotated[list[str], add]
-
+# class OutputState(MessagesState):
+#     retrieved_docs: Annotated[list[str], add]
 
 # 输入Schema
 class RetrieveInputSchema(BaseModel):
     query: str = Field(..., description="The query to retrieve.")
 
-
 # 创建工具
-@tool(description="Retrieve relevant information to help answer a query", args_schema=RetrieveInputSchema)
+@tool(description="Retrieve relevant information from document store to help answer a question", args_schema=RetrieveInputSchema)
 def retrieve(query: str):
     """Retrieve information to help answer a query.
     Args:
@@ -224,6 +246,14 @@ def retrieve(query: str):
         for doc in retrieved_docs
     )
     return serialized
+@tool(description="Add two number")
+def add(a: int, b: int) -> str:
+    """Add two number.
+    Args:
+        a: first int
+        b: second int
+    """
+    return str(a + b)
 
 
 # 创建工具节点
@@ -232,11 +262,13 @@ def tool_node(state: OverallState):
     result = []
     all_retrieved_docs = []
     for tool_call in state["messages"][-1].tool_calls:
-        content = ""
+        tool = tools_by_name.get(tool_call["name"])
+        if tool is None:
+            print(f"Tool named '{tool_call['name']}' not found")
+            continue
+        content = tool.invoke(tool_call["args"])
         if tool_call["name"] == retrieve.name:
-            serialized = retrieve.invoke(tool_call["args"])
-            content = serialized
-            all_retrieved_docs.append(serialized)
+            all_retrieved_docs.append(content)
         result.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
     return {"messages": result, "retrieved_docs": all_retrieved_docs}
 
@@ -251,19 +283,31 @@ def should_use_tool(state: OverallState) -> Literal["tool_node", "__end__"]:
 
 
 # 创建生成查询的Node
-QUERY_PROMPT_STR = """
-You are a helpful RAG assistant.You can decide to use the tools.You can rewrite user's original question and generate some augmented questions that are better for retrieval.
+RETRIEVE_QUERY_PROMPT_STR = """
+You are a helpful RAG assistant.You have access to a retriever tool.Use the tool to better answer user's question.If you decide to use retrieve tool, rewrite user's original question and generate some augmented questions that are better for retrieval.
 
 Here is the original user question:
 {user_question}
 """
+QUERY_PROMPT_STR="""
+You are a helpful assistant.You have access to some tools.Use these tools to better answer user's question.
+
+Here is the original user question:
+{user_question}
+"""
+retrieve_query_promptTemplate = PromptTemplate.from_template(RETRIEVE_QUERY_PROMPT_STR, partial_variables={"user_question": "你好"})
 query_promptTemplate = PromptTemplate.from_template(QUERY_PROMPT_STR, partial_variables={"user_question": "你好"})
-def generate_query(state: OverallState):
-    """Call the model to generate a response based on the current state. Given
-    the question, it will decide to retrieve using the retriever tool, or simply respond to the user.
+def generate_query_or_respond(state: OverallState):
+    """Call the model to generate a response based on the current state. Based on state's command,
+    decide to retrieve using the retriever tool, or simply respond to the user.
     """
-    prompt = query_promptTemplate.invoke(input={"user_question": state["user_question"], "tools": tools})
-    response = (llm.bind_tools(tools)).invoke(prompt)
+    response = ""
+    if state["command"] == "retrieve":
+        prompt = retrieve_query_promptTemplate.invoke(input={"user_question": state["user_question"]})
+        response = (llm.bind_tools([retrieve])).invoke(prompt)
+    elif state["command"] == "direct":
+        prompt = query_promptTemplate.invoke(input={"user_question": state["user_question"]})
+        response = (llm.bind_tools(tools_without_retrieve)).invoke(prompt)
     return {"messages": [response]}
 
 
@@ -292,11 +336,12 @@ async def init_rag_application() -> dict[str, Any]:
     init_result = {}
 
     llm_init_task = asyncio.to_thread(init_llm)
+    tool_init_task = asyncio.create_task(init_tool_infos())
 
     vector_store_init_task = asyncio.to_thread(init_vector_store)
     text_splitter_init_task = asyncio.create_task(init_text_splitter())
-    nltk_resource_download_task = asyncio.to_thread(nltk_resource_download)
-    results = await asyncio.gather(vector_store_init_task, text_splitter_init_task, nltk_resource_download_task)
+
+    results = await asyncio.gather(vector_store_init_task, text_splitter_init_task)
     init_result["vector_store"] = results[0]
     init_result["text_splitter"] = results[1]
 
@@ -308,7 +353,9 @@ async def init_rag_application() -> dict[str, Any]:
 
     init_result["hybrid_retriever"] = hybrid_retriever
     init_result["compression_retriever"] = compression_retriever
-    init_result["llm"] = await llm_init_task
+
+    results = await asyncio.gather(llm_init_task, tool_init_task)
+    init_result["llm"] = results[0]
     return init_result
 
 
@@ -322,26 +369,26 @@ if __name__ == "__main__":
     hybrid_retriever = init_result["hybrid_retriever"]
     compression_retriever = init_result["compression_retriever"]
 
-    tools = [retrieve]
-    tools_by_name = {tool.name: tool for tool in tools}
-
     # 创建Graph
-    workflow = StateGraph(OverallState, output_schema=OutputState)
+    workflow = StateGraph(OverallState)
 
-    workflow.add_node(generate_query)
+    workflow.add_node(generate_query_or_respond)
     workflow.add_node(tool_node)
     workflow.add_node(generate_answer)
 
-    workflow.add_edge(START, "generate_query")
-    workflow.add_conditional_edges("generate_query", should_use_tool)
+    workflow.add_edge(START, "generate_query_or_respond")
+    workflow.add_conditional_edges("generate_query_or_respond", should_use_tool)
     workflow.add_edge("tool_node", "generate_answer")
     workflow.add_edge("generate_answer", END)
 
     agent = workflow.compile()
 
     # 运行
+    command = "retrieve"
     while True:
-        question = input("==================\nAsk your questions (input 'exit' to stop)：")
+        print(f"======================================================")
+        print(f"Current mode '{command}'. Enter '/{['retrieve', 'direct'][command == 'retrieve']}' to switch to {['retrieve', 'direct'][command == 'retrieve']} mode.")
+        question = input(f"Ask your questions (input 'exit' to stop)：")
         if question == "exit":
             if docs_ids:
                 delete = input("Do you want to delete the documents used in this session? If not, they will persist in the current folder. (y/n) ")
@@ -354,10 +401,17 @@ if __name__ == "__main__":
                     print("Documents will persist in the current folder.")
             print("Bye!")
             break
+        elif question in ["/direct", "/retrieve"]:
+            command = question[1:]
+            print(f"Switched to {command} mode.\n")
+            continue
+        state = {"command": command, "user_question": question, "retrieved_docs": []}
         for chunk in agent.stream(
-                input={"user_question": question},
+                input=state,
         ):
             for node, update in chunk.items():
                 print("Update from node", node)
                 update["messages"][-1].pretty_print()
                 print("\n\n")
+        if command == "retrieve" and state["retrieved_docs"]:
+            print(f"Documents\n: {state["retrieved_docs"]}")
