@@ -1,7 +1,13 @@
+import datetime
+import chromadb
+from chromadb.api.models.Collection import Collection
+from langchain_core.embeddings import Embeddings
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import PromptTemplate
 from langchain_core.retrievers import BaseRetriever
-from langchain_openai import ChatOpenAI
+from langchain_core.runnables import ConfigurableField
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -14,11 +20,11 @@ from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from IPython.display import Image, display
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from flashrank import Ranker
 from operator import add
 from langgraph.graph import MessagesState
-from typing import Annotated, Literal, Any, Coroutine
+from typing import Annotated, Literal, Any
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
@@ -31,6 +37,7 @@ import inspect
 import jieba
 import asyncio
 import time
+from chromadb import ClientAPI
 
 
 # 设置环境变量
@@ -40,50 +47,85 @@ def load_env():
     os.environ["LANGSMITH_TRACING"] = os.getenv("LANGSMITH_TRACING")
     if os.environ["LANGSMITH_TRACING"] == "true":
         os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
-
+    os.environ["MODEL_PROVIDER"] = os.getenv("MODEL_PROVIDER")
+    os.environ["MODEL_NAME"] = os.getenv("MODEL_NAME")
+    os.environ["OPENAI_API_BASE"] = os.getenv("OPENAI_BASE_URL")
+    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+    os.environ["EMBEDDING_MODEL"] = os.getenv("EMBEDDING_MODEL")
+    os.environ["OPENAI_EMBEDDING"] = os.getenv("OPENAI_EMBEDDING")
+    if os.environ["OPENAI_EMBEDDING"] == "true":
+        os.environ["OPENAI_EMBEDDING_API_BASE"] = os.getenv("OPENAI_EMBEDDING_BASE_URL")
+        os.environ["OPENAI_EMBEDDING_API_KEY"] = os.getenv("OPENAI_EMBEDDING_API_KEY")
 
 # 创建LLM
-def init_llm() -> ChatOpenAI:
-    load_env()
+async def init_llm():
     print("INIT LLM: Initializing LLM...")
-    model_name = os.getenv("MODEL_NAME")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+    llm = ChatOpenAI(model=os.environ["MODEL_NAME"], temperature=0.2)
+    if os.environ["MODEL_PROVIDER"] != "openai":
+        llm.openai_api_base = os.environ["OPENAI_API_BASE"]
+    return llm.configurable_fields(temperature=ConfigurableField(
+        id="temperature",
+        name="Runtime Temperature",
+        description="The runtime temperature provided by user"
+    ))
 
-    if os.getenv("MODEL_PROVIDER") == "openai":
-        return ChatOpenAI(
-            model=model_name,
-            temperature=0.3,
-            verbose=True
-        )
-    else:
-        return ChatOpenAI(
-            model=model_name,
-            temperature=0.3,
-            verbose=True,
-            base_url=base_url
-        )
 
 # 初始化嵌入模型
-def init_embedding_model() -> HuggingFaceEmbeddings:
+def init_embedding_model() -> Embeddings:
     print("INIT EMBEDDING MODEL: Initializing embedding model...")
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2", model_kwargs={"device": device})
+        print("INIT EMBEDDING MODEL: CUDA is available")
+    if os.environ["OPENAI_EMBEDDING"] == "true":
+        print("INIT EMBEDDING MODEL: Using OpenAI embedding model...")
+        return OpenAIEmbeddings(model=os.environ["EMBEDDING_MODEL"],
+                                base_url=os.environ["OPENAI_EMBEDDING_API_BASE"] if os.environ["OPENAI_EMBEDDING_API_BASE"] else None,
+                                api_key=SecretStr(os.environ["OPENAI_EMBEDDING_API_KEY"]))
+    print("INIT EMBEDDING MODEL: Using default HuggingFace embedding model...")
+    return HuggingFaceEmbeddings(model_name=os.environ["EMBEDDING_MODEL"], model_kwargs={"device": device})
+
 
 # 初始化向量数据库
-def init_vector_store() -> Chroma:
-    embeddings = init_embedding_model()
+async def init_vector_store(embeddings: Embeddings, client: ClientAPI, collection: Collection) -> Chroma:
     print("INIT VECTOR STORE: Initializing vector store...")
     return Chroma(
-        collection_name="example_collection",
-        embedding_function=embeddings,
-        persist_directory="./chroma_langchain_db",  # Where to save data locally, remove if not necessary
+        client=client,
+        collection_name=collection.name,
+        embedding_function=embeddings
     )
 
+
+def vector_store_use_or_create_collection(client: ClientAPI) -> Collection:
+    collections = client.list_collections()
+    exist_collections_name = []
+    collection_name = "rag_default"
+    if collections:
+        print("INIT VECTOR STORE: History collections\n-------------------------------------------------")
+        for c in collections:
+            exist_collections_name.append(c.name)
+            print(f"|   Collection: {c.name}, metadata:{c.metadata}   |")
+        print("-------------------------------------------------")
+    while True:
+        collection_name = input(f"INIT VECTOR STORE: Please input a collection name to {'use or create a new one:' if exist_collections_name else 'create:'}")
+        if collection_name in exist_collections_name:
+            print(f"INIT VECTOR STORE: Using history collection {collection_name}")
+        else:
+            print(f"INIT VECTOR STORE: Creating collection {collection_name}")
+        collection = client.get_or_create_collection(name=collection_name,
+                                        metadata={
+                                            "create_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M %A"),
+                                            "embedding_model": os.environ["EMBEDDING_MODEL"],
+                                            "hnsw:space": "cosine"
+                                        })
+        if collection.metadata["embedding_model"] != os.environ["EMBEDDING_MODEL"]:
+            print(f"INIT VECTOR STORE: WARNING! Current embedding model {os.environ["EMBEDDING_MODEL"]} is not compatible with the collection, please delete the collection or create a new one.")
+        else:
+            return collection
+
+
 # 初始化文本分词器
-async def init_text_splitter(chunk_size: int = 600, chunk_overlap: int = 100) -> RecursiveCharacterTextSplitter:
+async def init_text_splitter(chunk_size: int = 512, chunk_overlap: int = 100) -> RecursiveCharacterTextSplitter:
     print("INIT TEXT SPLITTER: Initializing text splitter...")
     return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True)
 
@@ -131,9 +173,10 @@ dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
         loader = PyPDFLoader(file_path)
         docs = loader.load()
         all_splits = text_splitter.split_documents(docs)
+        # Essentially, aadd_documents calls the run_in_executor method of asyncio, which is equivalent to .to_thread(), executing in a separate thread.
         document_ids = vector_store.add_documents(documents=all_splits)
         end_time = time.time()
-        print(f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, time cost: {end_time - start_time:.2f}s")
+        print(f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, cost: {end_time - start_time:.2f}s")
         return {"task_id": task_id, "error": None, "document_ids": document_ids}
     except Exception as e:
         return {"task_id": task_id, "error": e, "document_ids": None}
@@ -159,7 +202,7 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
         if file_path == "done":
             break
         elif os.path.exists(file_path):
-            # run task in another thread, map the task id to file path, and add task to task list
+            # run task in another process, map the task id to file path, and add task to task list
             load_task_id_to_file_path[load_task_id] = file_path
             task = asyncio.to_thread(load_doc_to_vector_store, text_splitter, vector_store, file_path, load_task_id)
             load_task_id += 1
@@ -181,7 +224,7 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
         ids=docs_info["ids"], k=sparse_k, preprocess_func=bilingual_preprocess_func)
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": semantic_k})
     print(f"LOADING DOCUMENTS: Added {len(all_document_ids)} documents to the vector store in total.\n"
-          f"LOADING DOCUMENTS: The number of documents in vector store is NOW {len(docs_info["ids"])}.")
+          f"LOADING DOCUMENTS: The number of documents of current collection is NOW {len(docs_info["ids"])}.")
     return {"sparse_retriever": bm25_retriever, "semantic_retriever": semantic_retriever, "all_document_ids": all_document_ids}
 
 
@@ -301,13 +344,15 @@ def generate_query_or_respond(state: OverallState):
     """Call the model to generate a response based on the current state. Based on state's command,
     decide to retrieve using the retriever tool, or simply respond to the user.
     """
+    # In this node, we want llm to answer more randomly using a higher temperature, even retrieve task.
     response = ""
     if state["command"] == "retrieve":
+        # through testing, with_config method should be used before bind_tools.In this case, configurable fields are passed to llm.
         prompt = retrieve_query_promptTemplate.invoke(input={"user_question": state["user_question"]})
-        response = (llm.bind_tools([retrieve])).invoke(prompt)
+        response = llm.with_config(configurable={"temperature": 0.6}).bind_tools([retrieve]).invoke(prompt)
     elif state["command"] == "direct":
         prompt = query_promptTemplate.invoke(input={"user_question": state["user_question"]})
-        response = (llm.bind_tools(tools_without_retrieve)).invoke(prompt)
+        response = llm.with_config(configurable={"temperature": 0.6}).bind_tools(tools_without_retrieve).invoke(prompt)
     return {"messages": [response]}
 
 
@@ -334,23 +379,26 @@ def draw_graph(graph: CompiledStateGraph):
 
 async def init_rag_application() -> dict[str, Any]:
     init_result = {}
+    load_env()
 
-    llm_init_task = asyncio.to_thread(init_llm)
+    llm_init_task = asyncio.create_task(init_llm())
+    text_splitter_init_task = asyncio.create_task(init_text_splitter())
     tool_init_task = asyncio.create_task(init_tool_infos())
 
-    vector_store_init_task = asyncio.to_thread(init_vector_store)
-    text_splitter_init_task = asyncio.create_task(init_text_splitter())
+    init_result["embeddings"] = await asyncio.to_thread(init_embedding_model)
 
-    results = await asyncio.gather(vector_store_init_task, text_splitter_init_task)
-    init_result["vector_store"] = results[0]
-    init_result["text_splitter"] = results[1]
+    init_result["client"] = chromadb.PersistentClient("./chroma_langchain_db")
+    init_result["collection"] = vector_store_use_or_create_collection(init_result["client"])
+    vector_store_init_task = asyncio.create_task(init_vector_store(init_result["embeddings"], init_result["client"], init_result["collection"]))
+    results = await asyncio.gather(text_splitter_init_task, vector_store_init_task)
+    init_result["text_splitter"] = results[0]
+    init_result["vector_store"] = results[1]
 
-    retrievers_and_docs_ids = await asyncio.create_task(load_docs_and_get_retriever(text_splitter=init_result["text_splitter"], vector_store=init_result["vector_store"]))
+    retrievers_and_docs_ids = await asyncio.create_task(load_docs_and_get_retriever(init_result["text_splitter"], init_result["vector_store"]))
     init_result["docs_ids"] = retrievers_and_docs_ids["all_document_ids"]
     hybrid_retriever = init_hybrid_retriever(sparse_retriever=retrievers_and_docs_ids["sparse_retriever"],
                                              semantic_retriever=retrievers_and_docs_ids["semantic_retriever"])
     compression_retriever = init_compression_retriever(base_retriever=hybrid_retriever)
-
     init_result["hybrid_retriever"] = hybrid_retriever
     init_result["compression_retriever"] = compression_retriever
 
@@ -362,8 +410,10 @@ async def init_rag_application() -> dict[str, Any]:
 if __name__ == "__main__":
     init_result = asyncio.run(init_rag_application())
     llm = init_result["llm"]
+    embeddings = init_result["embeddings"]
     vector_store = init_result["vector_store"]
-    embeddings = vector_store.embeddings
+    collection = init_result["collection"]
+    client = init_result["client"]
     text_splitter = init_result["text_splitter"]
     docs_ids = init_result["docs_ids"]
     hybrid_retriever = init_result["hybrid_retriever"]
@@ -386,12 +436,12 @@ if __name__ == "__main__":
     # 运行
     command = "retrieve"
     while True:
-        print(f"======================================================")
-        print(f"Current mode '{command}'. Enter '/{['retrieve', 'direct'][command == 'retrieve']}' to switch to {['retrieve', 'direct'][command == 'retrieve']} mode.")
-        question = input(f"Ask your questions (input 'exit' to stop)：")
-        if question == "exit":
+        print(f"====================================================================")
+        print(f"Using collection '{collection.name}'. Current mode '{command}'. Enter '/{['retrieve', 'direct'][command == 'retrieve']}' to switch to {['retrieve', 'direct'][command == 'retrieve']} mode.")
+        user_input = input(f"Ask your questions (input 'exit' to stop)：")
+        if user_input == "exit":
             if docs_ids:
-                delete = input("Do you want to delete the documents used in this session? If not, they will persist in the current folder. (y/n) ")
+                delete = input("Do you want to delete the documents added in this session? If not, they will persist in the current folder. (y/n) ")
                 while delete not in ["y", "n"]:
                     delete = input("Invalid input. Please enter 'y' or 'n': ")
                 if delete == "y":
@@ -401,11 +451,14 @@ if __name__ == "__main__":
                     print("Documents will persist in the current folder.")
             print("Bye!")
             break
-        elif question in ["/direct", "/retrieve"]:
-            command = question[1:]
+        elif user_input.startswith("/"):
+            if user_input not in ["/retrieve", "/direct"]:
+                print("Invalid command. Please enter '/retrieve' or '/direct'.")
+                continue
+            command = user_input[1:]
             print(f"Switched to {command} mode.\n")
             continue
-        state = {"command": command, "user_question": question, "retrieved_docs": []}
+        state = {"command": command, "user_question": user_input, "retrieved_docs": []}
         for chunk in agent.stream(
                 input=state,
         ):
