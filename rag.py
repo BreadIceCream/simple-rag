@@ -25,6 +25,8 @@ from flashrank import Ranker
 from operator import add
 from langgraph.graph import MessagesState
 from typing import Annotated, Literal, Any
+from qwen_reranker import QwenNativeReranker
+from simple_compressor import SimpleCompressor
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
@@ -56,6 +58,10 @@ def load_env():
     if os.environ["OPENAI_EMBEDDING"] == "true":
         os.environ["OPENAI_EMBEDDING_API_BASE"] = os.getenv("OPENAI_EMBEDDING_BASE_URL")
         os.environ["OPENAI_EMBEDDING_API_KEY"] = os.getenv("OPENAI_EMBEDDING_API_KEY")
+    os.environ["RERANKER_ENABLED"] = os.getenv("RERANKER_ENABLED")
+    if os.environ["RERANKER_ENABLED"] == "true":
+        os.environ["QWEN_RERANKER"] = os.getenv("QWEN_RERANKER")
+
 
 # 创建LLM
 async def init_llm():
@@ -80,7 +86,8 @@ def init_embedding_model() -> Embeddings:
     if os.environ["OPENAI_EMBEDDING"] == "true":
         print("INIT EMBEDDING MODEL: Using OpenAI embedding model...")
         return OpenAIEmbeddings(model=os.environ["EMBEDDING_MODEL"],
-                                base_url=os.environ["OPENAI_EMBEDDING_API_BASE"] if os.environ["OPENAI_EMBEDDING_API_BASE"] else None,
+                                base_url=os.environ["OPENAI_EMBEDDING_API_BASE"] if os.environ[
+                                    "OPENAI_EMBEDDING_API_BASE"] else None,
                                 api_key=SecretStr(os.environ["OPENAI_EMBEDDING_API_KEY"]))
     print("INIT EMBEDDING MODEL: Using default HuggingFace embedding model...")
     return HuggingFaceEmbeddings(model_name=os.environ["EMBEDDING_MODEL"], model_kwargs={"device": device})
@@ -107,19 +114,22 @@ def vector_store_use_or_create_collection(client: ClientAPI) -> Collection:
             print(f"|   Collection: {c.name}, metadata:{c.metadata}   |")
         print("-------------------------------------------------")
     while True:
-        collection_name = input(f"INIT VECTOR STORE: Please input a collection name to {'use or create a new one:' if exist_collections_name else 'create:'}")
+        collection_name = input(
+            f"INIT VECTOR STORE: Please input a collection name to {'use or create a new one:' if exist_collections_name else 'create:'}")
         if collection_name in exist_collections_name:
             print(f"INIT VECTOR STORE: Using history collection {collection_name}")
         else:
             print(f"INIT VECTOR STORE: Creating collection {collection_name}")
         collection = client.get_or_create_collection(name=collection_name,
-                                        metadata={
-                                            "create_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M %A"),
-                                            "embedding_model": os.environ["EMBEDDING_MODEL"],
-                                            "hnsw:space": "cosine"
-                                        })
+                                                     metadata={
+                                                         "create_time": datetime.datetime.now().strftime(
+                                                             "%Y-%m-%d %H:%M %A"),
+                                                         "embedding_model": os.environ["EMBEDDING_MODEL"],
+                                                         "hnsw:space": "cosine"
+                                                     })
         if collection.metadata["embedding_model"] != os.environ["EMBEDDING_MODEL"]:
-            print(f"INIT VECTOR STORE: WARNING! Current embedding model {os.environ["EMBEDDING_MODEL"]} is not compatible with the collection, please delete the collection or create a new one.")
+            print(
+                f"INIT VECTOR STORE: WARNING! Current embedding model {os.environ["EMBEDDING_MODEL"]} is not compatible with the collection, please delete the collection or create a new one.")
         else:
             return collection
 
@@ -137,11 +147,17 @@ def nltk_resource_download():
     nltk.download("punkt")
     nltk.download("stopwords")
     nltk.download("wordnet")
+
+
 stop_words = set(stopwords.words('english') + stopwords.words('chinese'))
 punctuation = set(string.punctuation) | set("，。！？【】（）《》“”‘’：；、—…—")
 lemmatizer = WordNetLemmatizer()
+
+
 def is_english_word(s: str) -> bool:
     return s and 'a' <= s[0].lower() <= 'z'
+
+
 def bilingual_preprocess_func(text: str) -> list[str]:
     """
     A powerful preprocessing function that supports mixed Chinese and English scenarios
@@ -165,8 +181,9 @@ def bilingual_preprocess_func(text: str) -> list[str]:
 
 
 # 加载文档并嵌入向量数据库
-def load_doc_to_vector_store(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma, file_path: str, task_id: int | None = None) -> \
-dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
+def load_doc_to_vector_store(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma, file_path: str,
+                             task_id: int | None = None) -> \
+        dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
     print(f"LOADING DOCUMENTS TASK: Loading task <{task_id}>, document: {file_path}...")
     try:
         start_time = time.time()
@@ -176,7 +193,8 @@ dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
         # Essentially, aadd_documents calls the run_in_executor method of asyncio, which is equivalent to .to_thread(), executing in a separate thread.
         document_ids = vector_store.add_documents(documents=all_splits)
         end_time = time.time()
-        print(f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, cost: {end_time - start_time:.2f}s")
+        print(
+            f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, cost: {end_time - start_time:.2f}s")
         return {"task_id": task_id, "error": None, "document_ids": document_ids}
     except Exception as e:
         return {"task_id": task_id, "error": e, "document_ids": None}
@@ -184,13 +202,14 @@ dict[str, Exception | None | int] | dict[str, None | list[str] | int]:
 
 # 加载文档、设置并返回sparse_retriever和semantic_retriever
 async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplitter, vector_store: Chroma,
-                                sparse_k: int = 30, semantic_k: int = 30) -> dict[
+                                      sparse_k: int = 30, semantic_k: int = 30) -> dict[
     str, BaseRetriever | list[str]]:
     """
     sparse_k: Amount of documents to return by sparse retriever, which retrieves using keywords (Default: 30, to improve the precision rate)
     semantic_k: Amount of documents to return by semantic retriever, which is provided by vector store and retrieves using similarity (Default: 30, to improve the precision rate)
     """
-    print(f"LOADING DOCUMENTS: Before adding documents, The number of documents in vector store is {vector_store._collection.count()}")
+    print(
+        f"LOADING DOCUMENTS: Before adding documents, The number of documents in vector store is {vector_store._collection.count()}")
     # download NLTK resources for bilingual preprocessing
     nltk_resource_download_task = asyncio.to_thread(nltk_resource_download)
     all_document_ids = []
@@ -215,7 +234,8 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
         if result is None:
             continue
         elif result["error"]:
-            print(f"LOADING DOCUMENTS: Task <{result['task_id']}> failed \n file path: {load_task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
+            print(
+                f"LOADING DOCUMENTS: Task <{result['task_id']}> failed \n file path: {load_task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
         else:
             all_document_ids.extend(result["document_ids"])
     docs_info = vector_store.get()
@@ -225,11 +245,13 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": semantic_k})
     print(f"LOADING DOCUMENTS: Added {len(all_document_ids)} documents to the vector store in total.\n"
           f"LOADING DOCUMENTS: The number of documents of current collection is NOW {len(docs_info["ids"])}.")
-    return {"sparse_retriever": bm25_retriever, "semantic_retriever": semantic_retriever, "all_document_ids": all_document_ids}
+    return {"sparse_retriever": bm25_retriever, "semantic_retriever": semantic_retriever,
+            "all_document_ids": all_document_ids}
 
 
 # 创建hybrid_retriever，使用RRF进行融合
-def init_hybrid_retriever(sparse_retriever: BaseRetriever, semantic_retriever: BaseRetriever, weights: list[float] = None) -> BaseRetriever:
+def init_hybrid_retriever(sparse_retriever: BaseRetriever, semantic_retriever: BaseRetriever,
+                          weights: list[float] = None) -> BaseRetriever:
     """weights: A list of weights corresponding to the retrievers. Defaults to equal weighting for all retrievers."""
     if weights is None:
         weights = [0.5, 0.5]
@@ -239,16 +261,31 @@ def init_hybrid_retriever(sparse_retriever: BaseRetriever, semantic_retriever: B
 
 # 初始化CompressionRetriever，内置rerank
 def init_compression_retriever(base_retriever: BaseRetriever, top_n: int = 7) -> BaseRetriever:
-    """top_n: Number of documents to return by CompressionRetriever. Default 7."""
+    """
+    top_n: Number of documents to return by CompressionRetriever. Default 7.
+    Notice that only when RERANKER_ENABLED in .env file is true, a real compression retriever which wraps a base retriever and a reranker (a base compressor) will be returned.
+    Otherwise, the method will use a simple compressor which returns top_n documents from the base retriever.
+    """
     print("INIT COMPRESSION RETRIEVER: Initializing compression retriever...")
-    ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/opt")
-    compressor = FlashrankRerank(client=ranker, top_n=top_n)
+    compressor = None
+    if os.environ["RERANKER_ENABLED"] == "true":
+        if os.environ["QWEN_RERANKER"] == "true":
+            compressor = QwenNativeReranker(top_n=top_n)
+        else:
+            ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/opt")
+            compressor = FlashrankRerank(client=ranker, top_n=top_n)
+    else:
+        print("INIT COMPRESSION RETRIEVER: Reranker is disabled...")
+        compressor = SimpleCompressor(top_n=top_n)
     return ContextualCompressionRetriever(base_retriever=base_retriever, base_compressor=compressor)
+
 
 # 扫描当前模块中的所有StructuredTool对象，并将它们添加到tools列表中
 tools = []
 tools_without_retrieve = []
 tools_by_name = {}
+
+
 async def init_tool_infos():
     print("INIT TOOL INFO: Scanning current module for StructuredTool objects...")
     current_module = sys.modules['__main__']
@@ -261,6 +298,7 @@ async def init_tool_infos():
             tools_without_retrieve.append(tool)
     print(f"INIT TOOL INFO: Find {len(tools)} tools")
 
+
 # =========================================================================
 
 # 图状态
@@ -269,6 +307,7 @@ class OverallState(MessagesState):
     user_question: str
     retrieved_docs: Annotated[list[str], add]
 
+
 # class OutputState(MessagesState):
 #     retrieved_docs: Annotated[list[str], add]
 
@@ -276,8 +315,10 @@ class OverallState(MessagesState):
 class RetrieveInputSchema(BaseModel):
     query: str = Field(..., description="The query to retrieve.")
 
+
 # 创建工具
-@tool(description="Retrieve relevant information from document store to help answer a question", args_schema=RetrieveInputSchema)
+@tool(description="Retrieve relevant information from document store to help answer a question",
+      args_schema=RetrieveInputSchema)
 def retrieve(query: str):
     """Retrieve information to help answer a query.
     Args:
@@ -289,6 +330,8 @@ def retrieve(query: str):
         for doc in retrieved_docs
     )
     return serialized
+
+
 @tool(description="Add two number")
 def add(a: int, b: int) -> str:
     """Add two number.
@@ -332,14 +375,17 @@ You are a helpful RAG assistant.You have access to a retriever tool.Use the tool
 Here is the original user question:
 {user_question}
 """
-QUERY_PROMPT_STR="""
+QUERY_PROMPT_STR = """
 You are a helpful assistant.You have access to some tools.Use these tools to better answer user's question.
 
 Here is the original user question:
 {user_question}
 """
-retrieve_query_promptTemplate = PromptTemplate.from_template(RETRIEVE_QUERY_PROMPT_STR, partial_variables={"user_question": "你好"})
+retrieve_query_promptTemplate = PromptTemplate.from_template(RETRIEVE_QUERY_PROMPT_STR,
+                                                             partial_variables={"user_question": "你好"})
 query_promptTemplate = PromptTemplate.from_template(QUERY_PROMPT_STR, partial_variables={"user_question": "你好"})
+
+
 def generate_query_or_respond(state: OverallState):
     """Call the model to generate a response based on the current state. Based on state's command,
     decide to retrieve using the retriever tool, or simply respond to the user.
@@ -364,6 +410,8 @@ Question: {question}
 Context: {context}
 """
 answer_prompt = PromptTemplate.from_template(ANSWER_PROMPT_STR)
+
+
 def generate_answer(state: OverallState):
     """Call the model to generate a final answer based on the current state."""
     chain = answer_prompt | llm
@@ -374,7 +422,6 @@ def generate_answer(state: OverallState):
 # 绘制图：
 def draw_graph(graph: CompiledStateGraph):
     display(Image(graph.get_graph().draw_mermaid_png()))
-
 
 
 async def init_rag_application() -> dict[str, Any]:
@@ -389,12 +436,14 @@ async def init_rag_application() -> dict[str, Any]:
 
     init_result["client"] = chromadb.PersistentClient("./chroma_langchain_db")
     init_result["collection"] = vector_store_use_or_create_collection(init_result["client"])
-    vector_store_init_task = asyncio.create_task(init_vector_store(init_result["embeddings"], init_result["client"], init_result["collection"]))
+    vector_store_init_task = asyncio.create_task(
+        init_vector_store(init_result["embeddings"], init_result["client"], init_result["collection"]))
     results = await asyncio.gather(text_splitter_init_task, vector_store_init_task)
     init_result["text_splitter"] = results[0]
     init_result["vector_store"] = results[1]
 
-    retrievers_and_docs_ids = await asyncio.create_task(load_docs_and_get_retriever(init_result["text_splitter"], init_result["vector_store"]))
+    retrievers_and_docs_ids = await asyncio.create_task(
+        load_docs_and_get_retriever(init_result["text_splitter"], init_result["vector_store"]))
     init_result["docs_ids"] = retrievers_and_docs_ids["all_document_ids"]
     hybrid_retriever = init_hybrid_retriever(sparse_retriever=retrievers_and_docs_ids["sparse_retriever"],
                                              semantic_retriever=retrievers_and_docs_ids["semantic_retriever"])
@@ -437,15 +486,20 @@ if __name__ == "__main__":
     command = "retrieve"
     while True:
         print(f"====================================================================")
-        print(f"Using collection '{collection.name}'. Current mode '{command}'. Enter '/{['retrieve', 'direct'][command == 'retrieve']}' to switch to {['retrieve', 'direct'][command == 'retrieve']} mode.")
+        print(
+            f"Using collection '{collection.name}'. Current mode '{command}'. Enter '/{['retrieve', 'direct'][command == 'retrieve']}' to switch to {['retrieve', 'direct'][command == 'retrieve']} mode.")
         user_input = input(f"Ask your questions (input 'exit' to stop)：")
         if user_input == "exit":
             if docs_ids:
-                delete = input("Do you want to delete the documents added in this session? If not, they will persist in the current folder. (y/n) ")
+                delete = input(
+                    "Do you want to delete the documents added in this session? If not, they will persist in the current folder. (y/n) ")
                 while delete not in ["y", "n"]:
                     delete = input("Invalid input. Please enter 'y' or 'n': ")
                 if delete == "y":
-                    vector_store.delete(ids=docs_ids)
+                    collection.delete(ids=docs_ids)
+                    if collection.count() == 0:
+                        print(f"No documents.Delete collection {collection.name}.")
+                        client.delete_collection(collection.name)
                     print("Documents deleted.")
                 else:
                     print("Documents will persist in the current folder.")
