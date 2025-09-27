@@ -48,13 +48,7 @@
 
 ### 依赖安装
 
-```bash
-pip install langchain langgraph chromadb 
-pip install langchain-openai langchain-huggingface langchain-community 
-pip install flashrank nltk jieba  python-dotenv pydantic ipython
-pip install torch # optional if not using GPU
-pip install transformers # optional if not using Qwen reranker
-```
+查看 `requirements.txt`
 
 ### 环境变量配置
 

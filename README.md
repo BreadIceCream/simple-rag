@@ -53,13 +53,7 @@ An advanced RAG system developed based on LangGraph, supporting bilingual (Chine
 
 ### Dependency Installation
 
-```bash
-pip install langchain langgraph chromadb 
-pip install langchain-openai langchain-huggingface langchain-community 
-pip install flashrank nltk jieba  python-dotenv pydantic ipython
-pip install torch # optional if not using GPU
-pip install transformers # optional if not using Qwen reranker
-```
+see `requirements.txt`
 
 ### Environment Variable Configuration
 
