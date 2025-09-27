@@ -49,17 +49,16 @@
 ### 依赖安装
 
 ```bash
-pip install langchain langgraph chromadb
-pip install langchain-openai langchain-huggingface
-pip install langchain-community flashrank transformers
-pip install nltk jieba torch python-dotenv
-# optional
-pip install qwen-reranker
+pip install langchain langgraph chromadb 
+pip install langchain-openai langchain-huggingface langchain-community 
+pip install flashrank nltk jieba  python-dotenv pydantic ipython
+pip install torch # optional if not using GPU
+pip install transformers # optional if not using Qwen reranker
 ```
 
 ### 环境变量配置
 
-复制并配置 `.env` 文件，更多详细配置信息请查看 `.env-backup` 文件：
+复制并配置 `.env-backup` 文件（忽略`.env`文件），更多详细配置信息请查看 `.env-backup` 文件：
 
 ```env
 # LangSmith 追踪

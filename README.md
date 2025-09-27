@@ -54,17 +54,16 @@ An advanced RAG system developed based on LangGraph, supporting bilingual (Chine
 ### Dependency Installation
 
 ```bash
-pip install langchain langgraph chromadb
-pip install langchain-openai langchain-huggingface
-pip install langchain-community flashrank transformers
-pip install nltk jieba torch python-dotenv
-# optional
-pip install qwen-reranker
+pip install langchain langgraph chromadb 
+pip install langchain-openai langchain-huggingface langchain-community 
+pip install flashrank nltk jieba  python-dotenv pydantic ipython
+pip install torch # optional if not using GPU
+pip install transformers # optional if not using Qwen reranker
 ```
 
 ### Environment Variable Configuration
 
-Copy and configure the `.env` file. For more detailed configuration information, please refer to the `.env-backup` file:
+Copy and configure the `.env-backup` file (IGNORE `.env`). For more detailed configuration information, please refer to the `.env-backup` file:
 
 ```env
 # LangSmith Tracing
