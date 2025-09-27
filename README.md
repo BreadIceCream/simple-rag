@@ -54,6 +54,10 @@ An advanced RAG system developed based on LangGraph, supporting bilingual (Chine
 ### Dependency Installation
 
 see `requirements.txt`
+```bash
+pip install -r requirements.txt
+```
+
 
 ### Environment Variable Configuration
 

@@ -49,6 +49,10 @@
 ### 依赖安装
 
 查看 `requirements.txt`
+```bash
+pip install -r requirements.txt
+```
+
 
 ### 环境变量配置
 
