@@ -22,7 +22,6 @@ from IPython.display import Image, display
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field, SecretStr
 from flashrank import Ranker
-from operator import add
 from langgraph.graph import MessagesState
 from typing import Annotated, Literal, Any
 from qwen_reranker import QwenNativeReranker
@@ -301,11 +300,14 @@ async def init_tool_infos():
 
 # =========================================================================
 
+def union(a: set, b: set):
+    return a.union(b)
+
 # 图状态
 class OverallState(MessagesState):
     command: Literal["retrieve", "direct"]
     user_question: str
-    retrieved_docs: Annotated[list[str], add]
+    retrieved_docs: Annotated[set[str], union]
 
 
 # class OutputState(MessagesState):
@@ -325,11 +327,13 @@ def retrieve(query: str):
         query: string.The query to retrieve.
     """
     retrieved_docs = compression_retriever.invoke(input=query)
-    serialized = "\n\n".join(
-        f"Source: {doc.metadata}\nContent: {doc.page_content}"
-        for doc in retrieved_docs
-    )
-    return serialized
+    serialized = ""
+    origin_docs_map = {}
+    for doc in retrieved_docs:
+        doc_str = f"\nSource: {doc.metadata}\nContent: {doc.page_content}\n"
+        serialized += doc_str
+        origin_docs_map[doc.id] = doc_str
+    return {"serialized": serialized, "origin_docs_map": origin_docs_map}
 
 
 @tool(description="Add two number")
@@ -345,8 +349,8 @@ def add(a: int, b: int) -> str:
 # 创建工具节点
 def tool_node(state: OverallState):
     """Performs the tool"""
-    result = []
-    all_retrieved_docs = []
+    result_messages = []
+    all_deduplicate_docs = {}
     for tool_call in state["messages"][-1].tool_calls:
         tool = tools_by_name.get(tool_call["name"])
         if tool is None:
@@ -354,9 +358,13 @@ def tool_node(state: OverallState):
             continue
         content = tool.invoke(tool_call["args"])
         if tool_call["name"] == retrieve.name:
-            all_retrieved_docs.append(content)
-        result.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
-    return {"messages": result, "retrieved_docs": all_retrieved_docs}
+            # the result of retrieve tool is a dict contains two elements: serialized and origin_docs_map
+            origin_docs_map = content["origin_docs_map"]  # list[Document]
+            content = content["serialized"]
+            for doc_id, doc_str in origin_docs_map.items():
+                all_deduplicate_docs[doc_id] = doc_str
+        result_messages.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+    return {"messages": result_messages, "retrieved_docs": set(list(all_deduplicate_docs.values()))}
 
 
 def should_use_tool(state: OverallState) -> Literal["tool_node", "__end__"]:
@@ -415,7 +423,8 @@ answer_prompt = PromptTemplate.from_template(ANSWER_PROMPT_STR)
 def generate_answer(state: OverallState):
     """Call the model to generate a final answer based on the current state."""
     chain = answer_prompt | llm
-    response = chain.invoke(input={"question": state["user_question"], "context": state["retrieved_docs"]})
+    context = "".join(state["retrieved_docs"])
+    response = chain.invoke(input={"question": state["user_question"], "context": context})
     return {"messages": [response]}
 
 
