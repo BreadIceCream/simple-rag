@@ -2,6 +2,8 @@
 
 An advanced RAG system developed based on LangGraph, supporting bilingual (Chinese and English) document retrieval. It employs a hybrid retrieval strategy (BM25 + semantic search) and a re-ranking function, offering two operational modes: retrieval-augmented mode and direct conversation mode.
 
+[Chinese version](https://github.com/BreadIceCream/simple-rag/blob/master/README-zh.md)
+
 ## Features
 
   - 🔄 **Hybrid Retrieval**: A hybrid retrieval strategy combining BM25 sparse retrieval and semantic search.
