@@ -1,5 +1,6 @@
 # RAG (Retrieval-Augmented Generation) System
 
+[English Version](./README.md)
 基于 LangGraph 开发的高级 RAG 系统，支持双语（中英文）文档检索，采用混合检索策略（BM25 + 语义搜索）和重排序功能，提供两种运行模式：检索增强模式和直接对话模式。
 
 ## 项目特性
