@@ -1,8 +1,8 @@
 # RAG (Retrieval-Augmented Generation) System
 
-An advanced RAG system developed based on LangGraph, supporting bilingual (Chinese and English) document retrieval. It employs a hybrid retrieval strategy (BM25 + semantic search) and a re-ranking function, offering two operational modes: retrieval-augmented mode and direct conversation mode.
+[中文版本](./README-zh.md)
 
-[Chinese version](./README-zh.md)
+An advanced RAG system developed based on LangGraph, supporting bilingual (Chinese and English) document retrieval. It employs a hybrid retrieval strategy (BM25 + semantic search) and a re-ranking function, offering two operational modes: retrieval-augmented mode and direct conversation mode.
 
 ## Features
 
