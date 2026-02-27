@@ -1,0 +1,7 @@
+.env
+.idea
+docs/
+demo.ipynb
+/chroma_langchain_db
+__pycache__
+todos.md
