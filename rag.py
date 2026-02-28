@@ -1,12 +1,13 @@
 import datetime
 import chromadb
 from chromadb.api.models.Collection import Collection
+from langchain_classic.retrievers import EnsembleRetriever, ContextualCompressionRetriever
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import PromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import ConfigurableField
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,7 +15,6 @@ from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_compressors import FlashrankRerank
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain_core.tools import tool, StructuredTool
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
