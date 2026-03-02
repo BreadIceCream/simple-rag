@@ -194,9 +194,9 @@ def load_doc_to_vector_store(text_splitter: RecursiveCharacterTextSplitter, vect
         end_time = time.time()
         print(
             f"LOADING DOCUMENTS TASK: Task <{task_id}> Done! Added {len(all_splits)} documents to the vector store this time, cost: {end_time - start_time:.2f}s")
-        return {"task_id": task_id, "error": None, "document_ids": document_ids}
+        return {"file_id": task_id, "error": None, "document_ids": document_ids}
     except Exception as e:
-        return {"task_id": task_id, "error": e, "document_ids": None}
+        return {"file_id": task_id, "error": e, "document_ids": None}
 
 
 # 加载文档、设置并返回sparse_retriever和semantic_retriever
@@ -234,7 +234,7 @@ async def load_docs_and_get_retriever(text_splitter: RecursiveCharacterTextSplit
             continue
         elif result["error"]:
             print(
-                f"LOADING DOCUMENTS: Task <{result['task_id']}> failed \n file path: {load_task_id_to_file_path[result['task_id']]} \n error message : {result['error']}")
+                f"LOADING DOCUMENTS: Task <{result['file_id']}> failed \n file path: {load_task_id_to_file_path[result['file_id']]} \n error message : {result['error']}")
         else:
             all_document_ids.extend(result["document_ids"])
     docs_info = vector_store.get()
