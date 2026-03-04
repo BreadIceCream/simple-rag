@@ -5,7 +5,9 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
-from app.core.chunking import SplitterChainFactory
+from app.core.chunking import SplitterRegistry
+from app.core.document_loader import DocumentLoaderChain
+from app.core.retriever import RetrieverFactory
 from app.core.embeddings import EmbeddingModelFactory
 from app.core.vector_store import VectorStoreFactory
 from app.exception.exception_handler import register_exception_handler
@@ -18,12 +20,15 @@ async def lifespan(app: FastAPI):
     global_config.load()
     DatabaseManager.init()
     await DatabaseManager.init_db()
-    SplitterChainFactory.init_text_splitters()
     EmbeddingModelFactory.init_embedding_model()
-    VectorStoreFactory.init_vector_store(
+    vectorstore = VectorStoreFactory.init_vector_store(
         embeddings=EmbeddingModelFactory.get_instance(),
         collection_name=global_config.get("vector_store").get("collection_name")
     )
+    docstore = VectorStoreFactory.init_docstore()
+    DocumentLoaderChain.init()
+    SplitterRegistry.init()
+    RetrieverFactory.init(vectorstore, docstore)
     yield
     # 关闭：清理资源
     await DatabaseManager.close()

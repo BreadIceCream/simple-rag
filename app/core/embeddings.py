@@ -29,8 +29,7 @@ class EmbeddingModelFactory:
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda"
-            print("INIT EMBEDDING MODEL: CUDA is available")
-
+        print(f"INIT EMBEDDING MODEL: device {device}")
         embedding_config = global_config.get("embedding")
         if embedding_config.get("openai_embedding") == "true":
             print("INIT EMBEDDING MODEL: Using OpenAI embedding model...")

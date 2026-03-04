@@ -1,8 +1,21 @@
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter, TextSplitter, MarkdownHeaderTextSplitter, Language, \
-    HTMLHeaderTextSplitter
+"""
+chunking模块。配置和注册不同类型文件的 TextSplitter
 
-from app.models.common import SplitResult
+核心组件：
+- MarkdownTextSplitterAdapter / HTMLTextSplitterAdapter: TextSplitter 子类适配器
+- SplitterEntry / SplitterRegistry: 按文件类型选择最优先的 parent TextSplitter
+"""
+
+import os
+from typing import Any
+
+from langchain_core.documents import Document
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter, TextSplitter,
+    MarkdownHeaderTextSplitter, HTMLHeaderTextSplitter, Language,
+)
+
+# ======================== 常量 ========================
 
 # 文件后缀 → Language 枚举的映射
 EXT_TO_LANGUAGE: dict[str, Language] = {
@@ -28,254 +41,386 @@ EXT_TO_LANGUAGE: dict[str, Language] = {
     ".latex": Language.LATEX,
 }
 
-# 通配符，表示匹配所有文件类型
+# 通配符，匹配所有文件类型
 MATCH_ALL = "*"
 
+TEXT_SPLITTERS_METADATA_KEY = "text_splitters"
 
-class Splitter:
+
+class TextSplitterMetadataMixin:
     """
-    基础分块器(拦截器)。
-    每个 Splitter 声明自己支持的文件类型集合，以及一个 order(执行优先级，越小越先执行)。
-    supported_file_types 中包含 MATCH_ALL ("*") 表示匹配所有文件类型。
+    TextSplitter 元数据 Mixin：
+    为分块后的 Document 追加 text_splitters 元数据（当前分块器类名）。所有自定义 TextSplitter 均应混入此类。
     """
-    def __init__(
-        self,
-        text_splitter: TextSplitter | HTMLHeaderTextSplitter | MarkdownHeaderTextSplitter,
-        supported_file_types: set[str],
-        only_raw: bool = False,
-        order: int = 0,
-        name: str = "",
-    ):
+    def add_metadata(self, original_metadata: dict) -> dict:
+        """
+        追加当前分块器类名到 text_splitters 元数据列表。
+        :param original_metadata: 原始元数据字典
+        :return: 更新后的元数据字典
+        """
+        text_splitters = original_metadata.get(TEXT_SPLITTERS_METADATA_KEY, [])
+        text_splitters.append(self.__class__.__name__)
+        original_metadata[TEXT_SPLITTERS_METADATA_KEY] = text_splitters
+        return original_metadata
+
+
+# ======================== TextSplitter 适配器 ========================
+class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
+    """
+    Markdown 分割适配器：TextSplitter 子类，内部委托 MarkdownHeaderTextSplitter。
+
+    MarkdownHeaderTextSplitter.split_text() 返回 list[Document]（含标题层级元数据），
+    而 TextSplitter 的标准接口 split_text() 要求返回 list[str]。
+    因此本适配器重写 split_text / split_documents / create_documents 三个核心方法，
+    在保留元数据的同时满足 TextSplitter 接口约束。
+
+    NOTE: 在 ParentDocumentRetriever 中，add_documents 会调用 parent_splitter.split_documents()，
+    传入的每个 Document 的 page_content 即为完整的 Markdown 文件内容。
+    """
+    def __init__(self,
+                 headers_to_split_on: list[tuple[str, str]] | None = None,
+                 strip_headers: bool = False,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self._md_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on or [
+                ("#", "Header 1"), ("##", "Header 2"),
+            ],
+            strip_headers=strip_headers,
+        )
+
+    def split_text(self, text: str) -> list[str]:
+        """
+        按 Markdown 标题层级切分，返回各分块的文本内容。
+        无元数据保留。
+        """
+        docs = self._md_splitter.split_text(text)
+        return [doc.page_content for doc in docs]
+
+    def split_documents(self, documents: list[Document]) -> list[Document]:
+        """
+        按 Markdown 标题层级切分 Document 列表。
+        保留原始 Document 的 metadata，并合并 MarkdownHeaderTextSplitter 产生的标题层级元数据。
+        """
+        result = []
+        for doc in documents:
+            sub_docs = self._md_splitter.split_text(doc.page_content)
+            for sub_doc in sub_docs:
+                # 合并父文档的 metadata + 切分产生的标题层级 metadata
+                merged_metadata = {**doc.metadata, **sub_doc.metadata}
+                merged_metadata = self.add_metadata(merged_metadata)
+                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+        return result
+
+    def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Document]:
+        """将原始文本列表按 Markdown 标题层级切分为 Document 列表。"""
+        result = []
+        _metadatas = metadatas or [{}] * len(texts)
+        for text, metadata in zip(texts, _metadatas):
+            sub_docs = self._md_splitter.split_text(text)
+            for sub_doc in sub_docs:
+                merged_metadata = {**metadata, **sub_doc.metadata}
+                merged_metadata = self.add_metadata(merged_metadata)
+                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+        return result
+
+
+
+
+class HTMLTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
+    """
+    HTML 分割适配器：TextSplitter 子类，内部委托 HTMLHeaderTextSplitter。
+
+    HTMLHeaderTextSplitter 有三种切分方式：split_text(html_str)、split_text_from_url(url)、
+    split_text_from_file(file_path)。
+
+    在 ParentDocumentRetriever 流程中，传入的 Document 的 page_content 可能是：
+    1. HTML 文本内容
+    2. 文件路径
+    3. URL
+    本适配器在 split_documents 中根据 page_content 的内容自动选择合适的切分方式。
+    """
+
+    def __init__(self, headers_to_split_on: list[tuple[str, str]] | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self._html_splitter = HTMLHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on or [
+                ("h1", "Header 1"), ("h2", "Header 2"), ("h3", "Header 3")
+            ]
+        )
+
+    def _split_html_content(self, content: str) -> list[Document]:
+        """
+        根据内容类型选择合适的 HTMLHeaderTextSplitter 方法进行切分。
+        :param content: HTML 文本 / 文件路径 / URL
+        :return: 切分后的 Document 列表
+        """
+        if content.startswith("http://") or content.startswith("https://"):
+            return self._html_splitter.split_text_from_url(content)
+        elif os.path.exists(content) and os.path.isfile(content):
+            return self._html_splitter.split_text_from_file(content)
+        else:
+            # 视为 HTML 文本内容
+            return self._html_splitter.split_text(content)
+
+    def split_text(self, text: str) -> list[str]:
+        """按 HTML 标题层级切分，返回各分块的文本内容。"""
+        docs = self._split_html_content(text)
+        return [doc.page_content for doc in docs]
+
+    def split_documents(self, documents: list[Document]) -> list[Document]:
+        """
+        按 HTML 标题层级切分 Document 列表。
+        保留原始 Document 的 metadata，并合并 HTMLHeaderTextSplitter 产生的标题层级元数据。
+        """
+        result = []
+        for doc in documents:
+            sub_docs = self._split_html_content(doc.page_content)
+            for sub_doc in sub_docs:
+                merged_metadata = {**doc.metadata, **sub_doc.metadata}
+                merged_metadata = self.add_metadata(merged_metadata)
+                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+        return result
+
+    def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Document]:
+        """将原始文本/路径/URL 列表按 HTML 标题层级切分为 Document 列表。"""
+        result = []
+        _metadatas = metadatas or [{}] * len(texts)
+        for text, metadata in zip(texts, _metadatas):
+            sub_docs = self._split_html_content(text)
+            for sub_doc in sub_docs:
+                merged_metadata = {**metadata, **sub_doc.metadata}
+                merged_metadata = self.add_metadata(merged_metadata)
+                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+        return result
+
+
+
+class CodeTextSplitter(TextSplitterMetadataMixin, RecursiveCharacterTextSplitter):
+    """
+    代码分割器：RecursiveCharacterTextSplitter 子类
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(is_separator_regex=True, **kwargs)
+
+    def create_documents(
+        self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
+    ) -> list[Document]:
+        metadatas_ = metadatas or [{}] * len(texts)
+        for m in metadatas_:
+            self.add_metadata(m)
+        return super().create_documents(texts, metadatas_)
+
+    def set_separators_for_language(self, language: Language):
+        """根据语言设置适合的 separators"""
+        self._separators = self.get_separators_for_language(language)
+        self._is_separator_regex = True
+
+
+class UniversalTextSplitter(TextSplitterMetadataMixin, RecursiveCharacterTextSplitter):
+    """
+    通用分割器：RecursiveCharacterTextSplitter 子类
+    """
+
+    def create_documents(
+        self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
+    ) -> list[Document]:
+        metadatas_ = metadatas or [{}] * len(texts)
+        for m in metadatas_:
+            self.add_metadata(m)
+        return super().create_documents(texts, metadatas_)
+
+
+class ChildTextSplitter(TextSplitterMetadataMixin, RecursiveCharacterTextSplitter):
+    """
+    子分割器：RecursiveCharacterTextSplitter 子类
+    """
+
+    def create_documents(
+        self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
+    ) -> list[Document]:
+        metadatas_ = metadatas or [{}] * len(texts)
+        for m in metadatas_:
+            self.add_metadata(m)
+        return super().create_documents(texts, metadatas_)
+
+
+# ======================== SplitterRegistry ========================
+
+class SplitterEntry:
+    """
+    已注册的分块器条目。
+    - text_splitter: TextSplitter 实例
+    - supported_file_types: 支持的文件后缀集合，包含 MATCH_ALL("*") 表示匹配所有类型
+    - order: 优先级，越小越优先（相同文件类型下，order 最小的优先选中）
+    - name: 名称，默认使用传入的 TextSplitter 实例的类名
+    """
+
+    def __init__(self, text_splitter: TextSplitter, supported_file_types: set[str],
+                 name: str | None = None, order: int = 0):
         self.text_splitter = text_splitter
         self.supported_file_types = supported_file_types
-        self.only_raw = only_raw  # 是否只处理原始输入（不事先经过loader），而非 Document 列表
+        self.name = name or text_splitter.__class__.__name__
         self.order = order
-        self.name = name or self.__class__.__name__
 
-    def supports(self, file_type: str, file_is_raw: bool) -> bool:
-        """判断是否支持处理该文件类型"""
-        if self.only_raw and not file_is_raw:
-            return False
+    def supports(self, file_type: str) -> bool:
+        """判断是否支持该文件类型"""
         return MATCH_ALL in self.supported_file_types or file_type in self.supported_file_types
 
-    def do_split(self, docs: list[Document] | list[str] | str, file_type: str = None) -> (bool, list[Document]):
-        """执行分块，子类可重写"""
-        try:
-            if isinstance(docs, str):
-                processed = self.text_splitter.split_text(docs)
-            elif isinstance(docs, list) and isinstance(docs[0], str):
-                processed = self.text_splitter.create_documents(docs)
-            else:
-                processed = self.text_splitter.split_documents(docs)
-            return True, processed
-        except Exception as e:
-            print(f"SPLIT ERROR in {self.name} for file type '{file_type}': {e}")
-            return False, docs
 
-
-class MarkdownSplitter(Splitter):
+class SplitterRegistry:
     """
-    Markdown 分块器：按标题层级切分，支持 .md 文件。
-    order=10，优先于通用分块器。
-    """
-    def __init__(self, order: int = 10):
-        super().__init__(
-            text_splitter=MarkdownHeaderTextSplitter(
-                [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3"), ("####", "Header 4")],
-                strip_headers=False,
-            ),
-            supported_file_types={".md"},
-            only_raw=True, # 只处理原始输入
-            order=order,
-            name="MarkdownHeaderTextSplitter",
-        )
-
-    def do_split(self, docs: str, file_type: str = None) -> (bool, list[Document]):
-        # 使用 MarkdownHeaderTextSplitter 进行分块，注意只能接收str，使用split_text方法
-        if isinstance(docs, str):
-            processed = self.text_splitter.split_text(docs)
-            return True, processed
-        return False, docs
-
-
-class HTMLSplitter(Splitter):
-    """
-    HTML 分块器：按标题层级切分，支持 .html/.htm 文件。
-    order=10，优先于通用分块器。
+    分块器注册表（parent_splitter 选择器）：
+    - 根据文件类型选择优先级最高的 TextSplitter 作为 parent_splitter
+    - 代码分块器共用一个 RecursiveCharacterTextSplitter，使用前动态调整 separators
+    - register() 注册 SplitterEntry，支持链式调用
+    - get_splitter(file_type) 返回当前文件类型下 order 最小的 TextSplitter,
+                            相同文件类型的多个 Splitter， order越小 + 越靠前注册的优先
     """
 
-    def __init__(self, order: int = 10):
-        super().__init__(
-            text_splitter=HTMLHeaderTextSplitter(
-                [("h1", "Header 1"), ("h2", "Header 2"), ("h3", "Header 3"), ("h4", "Header 4")]
-            ),
-            supported_file_types={".html", ".htm"},
-            only_raw=True,  # 只处理原始输入(不经过loader)
-            order=order,
-            name="HTMLHeaderTextSplitter",
-        )
+    _instance: "SplitterRegistry | None" = None
+    # 代码分块器：所有语言共用，使用前动态调整 separators
+    _code_splitter: RecursiveCharacterTextSplitter | None = None
+    # 子分块器
+    _child_splitter: RecursiveCharacterTextSplitter | None = None
+    child_splitter_name: str | None = None
 
-    def do_split(self, docs: str, file_type: str = None) -> (bool, list[Document]):
-        # 使用 HTMLHeaderTextSplitter 进行分块，注意只能接收str(url或者是file_path)
-        if isinstance(docs, str):
-            if docs.startswith("http"):
-                processed = self.text_splitter.split_text_from_url(docs)
-            else:
-                processed = self.text_splitter.split_text_from_file(docs)
-            return True, processed
-        return False, docs
-
-
-class CodeSplitter(Splitter):
-    """
-    代码分块器：持有单个 RecursiveCharacterTextSplitter 实例，
-    在 do_split 时根据文件后缀动态加载对应语言的 separators 进行分块。
-    """
-    def __init__(self, text_splitter: RecursiveCharacterTextSplitter, order: int = 10):
-        super().__init__(
-            text_splitter=text_splitter,
-            supported_file_types=set(EXT_TO_LANGUAGE.keys()),
-            only_raw=False,
-            order=order,
-            name="CodeSplitter",
-        )
-
-    def do_split(self, docs: list[Document] | list[str] | str, file_type: str = None) -> list[Document]:
-        language = EXT_TO_LANGUAGE.get(file_type)
-        if language is None:
-            raise ValueError(f"Unsupported code file type: {file_type}")
-        # 动态加载该语言的 separators
-        self.text_splitter._separators = RecursiveCharacterTextSplitter.get_separators_for_language(language)
-        self.text_splitter._is_separator_regex = True
-        return super().do_split(docs, file_type)
-
-
-class SplitterChain:
-    """
-    分块器链(拦截器链)：
-    - 通过 register() 注册 Splitter，支持动态扩展
-    - 执行时，按 order 排序，所有匹配当前文件类型的 Splitter 依次加工
-    - 前一个 Splitter 的输出作为后一个 Splitter 的输入(链式加工)
-    - 若无任何 Splitter 匹配，返回原始文档列表
-    """
     def __init__(self):
-        self._splitters: list[Splitter] = []
-        self._sorted = True  # 标记是否已按 order 排序
+        self._entries: list[SplitterEntry] = []
+        self._sorted = True
 
-    def register(self, splitter: Splitter) -> "SplitterChain":
+
+    @classmethod
+    def init(cls) -> "SplitterRegistry":
         """
-        注册一个 Splitter 到链中。支持链式调用。
-        :param splitter: 分块器实例
-        :return: self，支持链式调用
+        初始化 SplitterRegistry 单例，注册所有内置的 parent splitter。
+        从 global_config 读取 chunking.parent 配置。
         """
-        self._splitters.append(splitter)
+        if cls._instance is not None:
+            print("INIT SPLITTER REGISTRY: Instance already exists, returning cached instance.")
+            return cls._instance
+
+        from app.config.global_config import global_config
+        parent_cfg = global_config.get("chunking", {}).get("parent", {})
+        parent_chunk_size = parent_cfg.get("chunk_size", 512)
+        parent_chunk_overlap = parent_cfg.get("chunk_overlap", 100)
+
+        child_cfg = global_config.get("chunking", {}).get("child", {})
+        child_chunk_size = child_cfg.get("chunk_size", 256)
+        child_chunk_overlap = child_cfg.get("chunk_overlap", 50)
+
+        print(f"INIT SPLITTER REGISTRY: Initializing (parent_chunk_size={parent_chunk_size}, parent_chunk_overlap={parent_chunk_overlap})...")
+        print(f"INIT SPLITTER REGISTRY: Initializing (child_chunk_size={child_chunk_size}, child_chunk_overlap={child_chunk_overlap})...")
+
+        registry = cls()
+
+        # 1. Markdown 分块器（order=10，优先于通用分块器）
+        md_splitter = MarkdownTextSplitterAdapter(strip_headers=False)
+        registry.register(SplitterEntry(
+            text_splitter=md_splitter,
+            supported_file_types={".md"},
+            order=10)
+        )
+
+        # 2. HTML 分块器（order=10）
+        html_splitter = HTMLTextSplitterAdapter()
+        registry.register(SplitterEntry(
+            text_splitter=html_splitter,
+            supported_file_types={".html", ".htm"},
+            order=10)
+        )
+
+        # 3. 代码分块器：所有语言共用一个 CodeTextSplitter（order=10）
+        #    使用前由 get_splitter() 调用 set_separators_for_language 动态调整
+        cls._code_splitter = CodeTextSplitter(
+            chunk_size=parent_chunk_size,
+            chunk_overlap=parent_chunk_overlap,
+        )
+        registry.register(SplitterEntry(
+            text_splitter=cls._code_splitter,
+            supported_file_types=set(EXT_TO_LANGUAGE.keys()),
+            order=10)
+        )
+
+        # 4. 通用分块器（order=100，最后匹配）
+        universal_splitter = UniversalTextSplitter(
+            chunk_size=parent_chunk_size,
+            chunk_overlap=parent_chunk_overlap
+        )
+        registry.register(SplitterEntry(
+            text_splitter=universal_splitter,
+            supported_file_types={MATCH_ALL},
+            order=100)
+        )
+
+        # 5. 子分块器，不注册到链上
+        cls._child_splitter = ChildTextSplitter(
+            chunk_size=child_chunk_size,
+            chunk_overlap=child_chunk_overlap,
+            add_start_index=True
+        )
+        cls.child_splitter_name = cls._child_splitter.__class__.__name__
+
+        cls._instance = registry
+
+        registered = registry.entries
+        print(f"INIT SPLITTER REGISTRY: Initialized successfully, {len(registered)} entries registered. "
+              f"Registry: {', '.join(f'{e.name}(order={e.order})' for e in registered)}. "
+              f"Child splitter: {cls.child_splitter_name}")
+        return cls._instance
+
+    def register(self, entry: SplitterEntry) -> "SplitterRegistry":
+        """注册 SplitterEntry，支持链式调用。"""
+        if not isinstance(entry, SplitterEntry):
+            raise TypeError(f"Expected SplitterEntry instance, got {type(entry).__name__}")
+        self._entries.append(entry)
         self._sorted = False
         return self
 
     def _ensure_sorted(self):
-        """确保 splitters 按 order 升序排列"""
+        """确保 entries 按 order 升序 + 注册顺序排列（stable sort）"""
         if not self._sorted:
-            self._splitters.sort(key=lambda s: s.order)
+            self._entries.sort(key=lambda e: e.order)
             self._sorted = True
 
     @property
-    def splitters(self) -> list[Splitter]:
+    def entries(self) -> list[SplitterEntry]:
         self._ensure_sorted()
-        return list(self._splitters)
+        return list(self._entries)
 
-    def do_split(self, file_type: str, docs: list[Document] | list[str], file_is_raw: bool = False) -> SplitResult:
+    def get_splitter(self, file_type: str) -> tuple[str, TextSplitter]:
         """
-        对文档执行链式分块：遍历所有已注册且匹配当前文件类型的 Splitter，
-        前一个的输出作为后一个的输入。
-        :param file_type: 文件后缀(如 ".md", ".py")
-        :param docs: 待分块的文档列表
-        :param file_is_raw: docs 是否为原始输入（未经过loader），而非 Document 列表
-        :return: 最终分块结果
+        返回第一个支持该文件类型的 (splitter_name, TextSplitter)（order越小 + 越靠前注册的优先）。
+        对于代码文件，会在返回前动态调整共用 splitter 的 separators。
+        :param file_type: 文件后缀
+        :return: 元组(splitter_name, TextSplitter)
+        :raises ValueError: 没有匹配的 Splitter
         """
         self._ensure_sorted()
-
-        result = docs
-        applied_splitters = []
-
-        for splitter in self._splitters:
-            if splitter.supports(file_type, file_is_raw):
-                handled, result = splitter.do_split(result, file_type)
-                if handled:
-                    file_is_raw = False
-                    applied_splitters.append(splitter.name)
-
-        if not applied_splitters:
-            print(f"SPLITTER CHAIN: No splitter matched for file type '{file_type}', returning original docs.")
-        else:
-            print(f"SPLITTER CHAIN: Applied {len(applied_splitters)} splitters for '{file_type}': {' → '.join(applied_splitters)}")
-
-        return SplitResult(splitters=applied_splitters, chunks=result)
-
-
-class SplitterChainFactory:
-    """
-    分块器链工厂(单例)：通过 init_text_splitters 创建并缓存唯一的 SplitterChain 实例。
-    chunk_size 和 chunk_overlap 从 global_config 的 chunking 配置中读取。
-    """
-    _instance: SplitterChain | None = None
+        for entry in self._entries:
+            if entry.supports(file_type):
+                # 如果是代码文件，动态设置该语言的 separators
+                language = EXT_TO_LANGUAGE.get(file_type)
+                if language is not None and isinstance(entry.text_splitter, CodeTextSplitter):
+                    entry.text_splitter.set_separators_for_language(language)
+                    name = f"{entry.name}({language.value})"
+                    print(f"SPLITTER REGISTRY: Selected '{name}' for file type '{file_type}'")
+                    return name, entry.text_splitter
+                print(f"SPLITTER REGISTRY: Selected '{entry.name}' for file type '{file_type}'")
+                return entry.name, entry.text_splitter
+        raise ValueError(f"No splitter registered for file type: {file_type}")
 
     @classmethod
-    def init_text_splitters(cls) -> SplitterChain:
-        """
-        从 global_config 读取 chunking 配置，初始化文本分块器链并缓存为单例。
-        若实例已存在则直接返回，不会重复创建。
-        """
-        if cls._instance is not None:
-            print("INIT TEXT SPLITTERS: SplitterChain instance already exists, returning cached instance.")
-            return cls._instance
-
-        from app.config.global_config import global_config
-        chunking_cfg = global_config.get("chunking", {})
-        chunk_size = chunking_cfg.get("chunk_size", 512)
-        chunk_overlap = chunking_cfg.get("chunk_overlap", 100)
-
-        print(f"INIT TEXT SPLITTERS: Initializing (chunk_size={chunk_size}, chunk_overlap={chunk_overlap})...")
-
-        # 通用的 RecursiveCharacterTextSplitter，用于二次加工
-        recursive_splitter = Splitter(
-            text_splitter=RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True
-            ),
-            supported_file_types={MATCH_ALL},
-            order=100,  # 最后执行，对所有类型生效
-            name="RecursiveCharacterTextSplitter(fallback)",
-        )
-
-        # Markdown 分块器：按标题层级切分(order=10，优先于通用分块器)
-        md_splitter = MarkdownSplitter(order=10)
-
-        # HTML 分块器：按标题层级切分(order=10，优先于通用分块器)
-        html_splitter = HTMLSplitter(order=10)
-
-        # 代码分块器：按语言语法切分(order=10)
-        code_splitter = CodeSplitter(
-            text_splitter=RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True
-            ),
-            order=10,
-        )
-
-        # 构建链：通过 register 注册，按 order 排序
-        cls._instance = (SplitterChain()
-            .register(md_splitter)
-            .register(html_splitter)
-            .register(code_splitter)
-            .register(recursive_splitter)
-        )
-
-        registered = cls._instance.splitters
-        print(f"INIT TEXT SPLITTERS: Initialized successfully, {len(registered)} splitters registered: "
-              f"{', '.join(f'{s.name}(order={s.order})' for s in registered)}")
-        return cls._instance
+    def get_child_splitter(cls) -> TextSplitter:
+        """获取子分块器实例。未初始化时抛出异常。"""
+        if cls._child_splitter is None:
+            raise RuntimeError("Child splitter has not been initialized. Call SplitterRegistry.init() first.")
+        return cls._child_splitter
 
     @classmethod
-    def get_instance(cls) -> SplitterChain:
-        """获取 SplitterChain 单例。未初始化时抛出异常。"""
+    def get_instance(cls) -> "SplitterRegistry":
+        """获取 SplitterRegistry 单例。未初始化时抛出异常。"""
         if cls._instance is None:
-            raise RuntimeError("SplitterChain has not been initialized. Call init_text_splitters() first.")
+            raise RuntimeError("SplitterRegistry has not been initialized. Call SplitterRegistry.init() first.")
         return cls._instance

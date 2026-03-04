@@ -102,13 +102,15 @@ CSV 也没有单独列出的额外字段，因此只有通用字段。[[Open-sou
 
 ## 切分元数据内容
 
-切分后的chunk总共有4个id，file_id是所属文件的id（对应数据库中的id），id是每个chunk各自在向量数据库中的全局唯一id，element_id和parent_id是Unstructured返回的id，他们俩是关联的。
+切分后的chunk的metadata中总共有3个id，file_id是所属文件的id（对应数据库中的id），element_id和parent_id是Unstructured返回的id，他们俩是关联的。其中chunk有个属性为id，标识每个chunk。
 
-代码文件的chunk只有file_id和id。
+> 将id从metadata中移除
 
-非代码文件包含4个id，使用Unstructured第一次切分的doc有element_id和parent_id，此时设置统一的file_id，经过text_splitter切分为chunk后，额外设置了各自的id。
+代码文件的chunk的metadata中只有file_id。
 
-idx用于表示当前chunk是原文件的第几个chunk，通过file_id + idx也可以定位到这个chunk。
+非代码文件metadata包含3个id，使用Unstructured第一次切分的doc有element_id和parent_id，在使用text_splitter切分前设置统一的file_id.
+
+metadata中的index用于表示当前chunk是原文件的第几个chunk，通过file_id + index也可以定位到这个chunk。
 
 splitters元数据表示当前文档切分时所用的全部text_splitter
 
