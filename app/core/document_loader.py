@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 
 from app.config.global_config import global_config
 from app.core.chunking import EXT_TO_LANGUAGE
-from app.core.retriever import RetrieverFactory
+from app.core.retriever import EnhancedParentDocumentRetrieverFactory
 from app.models.common import LoadDocToVectorStoreResult
 
 # 支持的文件后缀
@@ -44,6 +44,7 @@ class DocumentLoader(ABC):
     文档加载器抽象父类（责任链节点）。
     子类须实现 supports() 和 do_load() 方法。
     """
+
     @property
     def name(self) -> str:
         return self.__class__.__name__
@@ -94,7 +95,8 @@ class DocumentLoader(ABC):
             "file_directory": os.path.dirname(os.path.abspath(path)) if not is_url else None,
             "file_name": os.path.basename(path) if not is_url else None,
             "file_extension": file_type,
-            "last_modified": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(path))) if not is_url else None,
+            "last_modified": time.strftime("%Y-%m-%dT%H:%M:%S",
+                                           time.localtime(os.path.getmtime(path))) if not is_url else None,
             "is_url": is_url,
             "document_loader": self.name,
         }
@@ -107,6 +109,7 @@ class PDFLoader(DocumentLoader):
     """
     PDF 文件加载器，使用 PyPDFLoader 加载 PDF.
     """
+
     def __init__(self, order: int = 10):
         super().__init__(PDF_EXTENSION, order)
 
@@ -269,14 +272,12 @@ class DocumentLoaderChain:
         return cls._instance
 
 
-
 async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False) -> \
         LoadDocToVectorStoreResult:
     """
     加载文档，分块与两层存储（子块向量 + 父文档持久化）。
-        1. 使用DocumentLoaderChain加载文档
-        2. 根据文件类型从 RetrieverFactory 获取已配置的 ParentDocumentRetriever
-        3. 使用 ParentDocumentRetriever.add_documents() 完成父文档分块、子文档向量化和父文档存储
+        1. 使用DocumentLoaderChain加载文档，添加file_id元数据
+        2. 使用 EnhancedParentDocumentRetrieverFactory 添加文档
     :param path: 文档路径/url
     :param file_id: 文档唯一标识（数据库id）
     :param is_url: 是否为url
@@ -306,17 +307,22 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
         for doc in docs:
             doc.metadata["file_id"] = file_id
 
-        # 4. 根据文件类型从 RetrieverFactory 获取已配置的 EnhancedParentDocumentRetriever，默认启用父分块器
+        # 4. 判断是否启用父分块器，默认启用
         enable_parent_splitter = True
         if TextLoader.name == loader_name:
             # 纯文本文件，若长度小于阈值则不启用父分块器，整体作为一个父文档
             text_length = docs[0].metadata.get("text_length", 0)
             if text_length < global_config.get("text_file_length_threshold", 1000):
                 enable_parent_splitter = False
-        parent_splitter_name, pd_retriever = RetrieverFactory.configure_pd_for_file_type(file_ext, enable_parent_splitter)
 
-        # 5. 使用 EnhancedParentDocumentRetriever.add_documents() 完成父文档分块、子文档向量化和父文档存储
-        parent_doc_ids, children_count = pd_retriever.add_documents(documents=docs, add_to_docstore=True)
+        # 5. 使用 EnhancedParentDocumentRetrieverFactory 添加文档
+        pd_add_docs_result = EnhancedParentDocumentRetrieverFactory.add_documents(file_type=file_ext, documents=docs,
+                                                             use_parent=enable_parent_splitter, add_to_docstore=True)
+
+        # 6. 获取结果
+        parent_splitter_name = pd_add_docs_result.parent_splitter_name
+        parent_doc_ids = pd_add_docs_result.parent_doc_ids
+        children_count = pd_add_docs_result.children_count
 
         end_time = time.time()
         cost = end_time - start_time
@@ -325,6 +331,7 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
             f"Loader: {loader_name}. Parent Splitter: {parent_splitter_name}, "
             f"Parent Doc count {len(parent_doc_ids)}. Children Doc count {children_count}. "
             f"Cost: {cost:.2f}s")
-        return LoadDocToVectorStoreResult(file_id, None, loader_name, parent_splitter_name, parent_doc_ids, children_count, cost)
+        return LoadDocToVectorStoreResult(file_id, None, loader_name, parent_splitter_name, parent_doc_ids,
+                                          children_count, cost)
     except Exception as e:
         return LoadDocToVectorStoreResult.error(file_id, e)

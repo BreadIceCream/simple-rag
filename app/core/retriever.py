@@ -3,16 +3,32 @@ retriever模块。
 
 核心组件：
 - EnhancedParentDocumentRetriever: 自定义 ParentDocumentRetriever，增强元数据和返回值
-- RetrieverFactory: 根据文件类型配置好 parent_splitter 的 ParentDocumentRetriever 工厂
+- EnhancedParentDocumentRetrieverFactory: 根据文件类型配置好 parent_splitter 的 ParentDocumentRetriever 工厂
 """
-
+import copy
+import math
+import string
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
-from langchain_classic.retrievers import ParentDocumentRetriever
+import jieba
+import nltk
+from langchain_classic.retrievers import ParentDocumentRetriever, EnsembleRetriever
+from langchain_classic.retrievers.multi_vector import SearchType
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallbackManagerForRetrieverRun
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
+from nltk import WordNetLemmatizer
+from nltk.corpus import stopwords
 
+from app.config.global_config import global_config
 from app.core.chunking import SplitterRegistry
+from app.exception.exception import CustomException
+from app.models.common import EnhancedPDRetrieverAddDocumentsResult
+
+_RAG_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ======================== EnhancedParentDocumentRetriever ========================
@@ -25,6 +41,7 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
     3. 为每个父文档块添加 parent_index，为每个子文档块添加 child_index 元数据
     4. 添加获取父/子文档块的方法
     5. 添加级联删除父子文档的方法
+    6. 重写_get_relevant_documents和_aget_relevant_documents方法，添加search_kwargs参数。不返回父文档块，直接返回子文档块
     """
 
     def get_parent_docs(self, parent_doc_ids: list[str]) -> list[tuple[str, Document]]:
@@ -105,9 +122,8 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
     ) -> tuple[list[Document], list[tuple[str, Document]]]:
         """
         重写父类方法，增加：
-        - 手动为子文档生成并设置 id 属性
-        - 父文档设置 id 属性，添加 children_ids, children_count, parent_index 元数据
-        - 子文档添加 child_index 元数据
+        - 为子文档生成并设置 id 属性，添加 id（后续EnsembleRetriever RRF使用）, child_index 元数据
+        - 父文档设置 id 属性，添加 id, children_ids, children_count, parent_index 元数据
         :param documents:
         :param ids:
         :param add_to_docstore:
@@ -147,12 +163,14 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
             for child_index, _doc in enumerate(sub_docs):
                 child_id = str(uuid.uuid4())
                 _doc.id = child_id
+                _doc.metadata["id"] = child_id
                 _doc.metadata[self.id_key] = parent_id
                 _doc.metadata["child_index"] = child_index
                 children_ids.append(child_id)
 
             # 为父文档设置id属性，并添加增强元数据
             parent_doc.id = parent_id
+            parent_doc.metadata["id"] = parent_id
             parent_doc.metadata["parent_index"] = parent_index
             parent_doc.metadata["children_ids"] = children_ids
             parent_doc.metadata["children_count"] = len(children_ids)
@@ -190,10 +208,11 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
         ids: Optional[list[str]] = None,
         add_to_docstore: bool = True,
         **kwargs: Any,
-    ) -> list[str]:
+    ) -> tuple[list[str], int]:
         """
         异步添加文档到 docstore 和 vectorstore
-        :return: 父文档 ID 列表
+        Splitter切分时会添加text_splitters元数据。
+        :return: (父文档 ID 有序列表, 添加的子文档总数)
         """
         children_docs, full_docs = self._split_docs_for_adding(
             documents,
@@ -203,53 +222,134 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
         await self.vectorstore.aadd_documents(children_docs, **kwargs)
         if add_to_docstore:
             await self.docstore.amset(full_docs)
-        return [_id for _id, _ in full_docs]
+        return [_id for _id, _ in full_docs], len(children_docs)
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+        search_kwargs: Optional[dict] = None,
+    ) -> list[Document]:
+        """
+        重写父类方法，直接返回子文档列表
+        :param query:
+        :param run_manager:
+        :param search_kwargs: 可选，搜索参数字典，会合并全局搜索参数，调用时传入的 search_kwargs 优先级高于全局搜索参数
+                              参考链接 https://docs.trychroma.com/docs/querying-collections/metadata-filtering
+        :return: 子文档有序列表
+        """
+        current_search_kwargs = copy.deepcopy(self.search_kwargs) if hasattr(self, "search_kwargs") else {}
+        if search_kwargs:
+            current_search_kwargs.update(search_kwargs)
+        print(f"SEARCHING VECTORSTORE: search_type={self.search_type}, search_kwargs={current_search_kwargs}")
+        if self.search_type == SearchType.mmr:
+            sub_docs = self.vectorstore.max_marginal_relevance_search(
+                query,
+                **current_search_kwargs,
+            )
+        elif self.search_type == SearchType.similarity_score_threshold:
+            sub_docs_and_similarities = (
+                self.vectorstore.similarity_search_with_relevance_scores(
+                    query,
+                    **current_search_kwargs,
+                )
+            )
+            sub_docs = [sub_doc for sub_doc, _ in sub_docs_and_similarities]
+        else:
+            sub_docs = self.vectorstore.similarity_search(query, **current_search_kwargs)
+        return sub_docs
+
+    async def _aget_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: AsyncCallbackManagerForRetrieverRun,
+        search_kwargs: Optional[dict] = None,
+    ) -> list[Document]:
+        """
+        重写父类方法，直接返回子文档列表
+        :param query:
+        :param run_manager:
+        :param search_kwargs: 可选，搜索参数字典，会合并全局搜索参数，调用时传入的 search_kwargs 优先级高于全局搜索参数
+        :return: 子文档有序列表
+        """
+        current_search_kwargs = copy.deepcopy(self.search_kwargs) if hasattr(self, "search_kwargs") else {}
+        if search_kwargs:
+            current_search_kwargs.update(search_kwargs)
+        print(f"SEARCHING VECTORSTORE ASYNC: search_type={self.search_type}, search_kwargs={current_search_kwargs}")
+        if self.search_type == SearchType.mmr:
+            sub_docs = await self.vectorstore.amax_marginal_relevance_search(
+                query,
+                **current_search_kwargs,
+            )
+        elif self.search_type == SearchType.similarity_score_threshold:
+            sub_docs_and_similarities = (
+                await self.vectorstore.asimilarity_search_with_relevance_scores(
+                    query,
+                    **current_search_kwargs,
+                )
+            )
+            sub_docs = [sub_doc for sub_doc, _ in sub_docs_and_similarities]
+        else:
+            sub_docs = await self.vectorstore.asimilarity_search(
+                query,
+                **current_search_kwargs,
+            )
+        return sub_docs
 
 
-# ======================== RetrieverFactory ========================
 
-class RetrieverFactory:
+# ======================== EnhancedParentDocumentRetrieverFactory ========================
+
+class EnhancedParentDocumentRetrieverFactory:
     """
     EnhancedParentDocumentRetriever 工厂(单例)。
-    职责：根据文件类型，从 SplitterRegistry 获取对应的 parent_splitter，
-    配置好 retriever.parent_splitter 并返回。
-    child_splitter 固定为 RecursiveCharacterTextSplitter，所有文件类型共用，从 SplitterRegistry 获取。
+    特别注意, 项目中全部使用同一个 EnhancedParentDocumentRetriever 实例，
+    因此在添加文档前必须先调用 configure_pd_for_file_type()，否则可能使用上次的 parent_splitter 配置，导致分块错误。
+    建议使用工厂的 add_documents / aadd_documents 方法添加文档。
+    职责：
+    1. 初始化 EnhancedParentDocumentRetriever：child_splitter 固定为 RecursiveCharacterTextSplitter，所有文件类型共用，从 SplitterRegistry 获取。
+    2. 添加文档：根据文件类型，从 SplitterRegistry 获取对应的 parent_splitter，配置好 retriever.parent_splitter 并执行添加。
     """
     _pd_retriever: EnhancedParentDocumentRetriever | None = None
 
     @classmethod
     def init(cls, vectorstore, docstore) -> EnhancedParentDocumentRetriever:
         """
-        初始化 EnhancedParentDocumentRetriever。
-        需先初始化SplitterRegistry，要从SplitterRegistry中获取Splitter
+        初始化 EnhancedParentDocumentRetriever
+        需先初始化SplitterRegistry，要从SplitterRegistry中获取ChildSplitter
         """
         if cls._pd_retriever is not None:
-            print("INIT RETRIEVER: Instance already exists, returning cached instance.")
+            print("INIT PARENT DOCUMENT RETRIEVER: Instance already exists, returning cached instance.")
             return cls._pd_retriever
 
         # child_splitter 固定：用于将父文档切成小块做向量检索
         child_splitter = SplitterRegistry.get_child_splitter()
 
+        # 获取全局搜索参数，默认使用 MMR 检索
         cls._pd_retriever = EnhancedParentDocumentRetriever(
             vectorstore=vectorstore,
             docstore=docstore,
             child_splitter=child_splitter,
+            search_type=SearchType.mmr, # 默认使用 MMR 检索
+            id_key="parent_id" # 父文档ID在子文档metadata中的键名，默认为parent_id
             # parent_splitter 不在此设置，由 configure_pd_for_file_type() 动态设置
         )
 
-        print("INIT RETRIEVER: Initialized successfully.")
+        print("INIT PARENT DOCUMENT RETRIEVER: Initialized successfully.")
         return cls._pd_retriever
 
     @classmethod
-    def configure_pd_for_file_type(cls, file_type: str, use_parent: bool = True) -> \
+    def _configure_pd_for_file_type(cls, file_type: str, use_parent: bool = True) -> \
             tuple[str, EnhancedParentDocumentRetriever]:
         """
-        根据文件类型配置 ParentDocumentRetriever 的 parent_splitter 并返回。
+        根据文件类型配置 EnhancedParentDocumentRetriever 的 parent_splitter 并返回。
         :param file_type: 文件后缀
         :param use_parent: 是否使用父分块器，False 则 parent_splitter=None（原始文档整体作为父文档）, splitter_name = None
         :return: (parent_splitter_name, EnhancedParentDocumentRetriever)
         """
-        retriever = cls.get_pd_retriever()
+        retriever = cls.get_instance()
         if use_parent:
             splitter_registry = SplitterRegistry.get_instance()
             splitter_name, parent_splitter = splitter_registry.get_splitter(file_type)
@@ -260,8 +360,304 @@ class RetrieverFactory:
         return splitter_name, retriever
 
     @classmethod
-    def get_pd_retriever(cls) -> EnhancedParentDocumentRetriever:
+    def add_documents(cls, file_type: str, documents: list[Document], ids: Optional[list[str]] = None,
+                      use_parent: bool = True, add_to_docstore: bool = True, **kwargs: Any,) -> \
+            EnhancedPDRetrieverAddDocumentsResult:
+        """
+        封装 EnhancedParentDocumentRetriever 的 add_documents 方法，
+        先调用 configure_pd_for_file_type 配置，再使用单例 retriever 添加文档。
+        :param file_type: 文件后缀
+        :param documents:
+        :param ids: 可选，为None会自动生成父文档ID
+        :param use_parent: 是否使用父分块器，False 则 parent_splitter=None（原始文档整体作为父文档）, splitter_name = None
+        :param add_to_docstore:
+        :param kwargs:
+        :return: EnhancedPDRetrieverAddDocumentsResult
+        """
+        parent_splitter_name, pd_retriever = cls._configure_pd_for_file_type(file_type, use_parent)
+        parent_doc_ids, children_count = pd_retriever.add_documents(documents, ids, add_to_docstore, **kwargs)
+        return EnhancedPDRetrieverAddDocumentsResult(
+            parent_doc_ids=parent_doc_ids,
+            children_count=children_count,
+            parent_splitter_name=parent_splitter_name
+        )
+
+    @classmethod
+    async def aadd_documents(cls, file_type: str, documents: list[Document], ids: Optional[list[str]] = None,
+                             use_parent: bool = True, add_to_docstore: bool = True,**kwargs: Any,) -> \
+            EnhancedPDRetrieverAddDocumentsResult:
+        """
+        封装 EnhancedParentDocumentRetriever 的 aadd_documents 方法，
+        :param file_type:
+        :param documents:
+        :param ids:
+        :param use_parent:
+        :param add_to_docstore:
+        :param kwargs:
+        :return:
+        """
+        parent_splitter_name, pd_retriever = cls._configure_pd_for_file_type(file_type, use_parent)
+        parent_doc_ids, children_count = await pd_retriever.aadd_documents(documents, ids, add_to_docstore, **kwargs)
+        return EnhancedPDRetrieverAddDocumentsResult(
+            parent_doc_ids=parent_doc_ids,
+            children_count=children_count,
+            parent_splitter_name=parent_splitter_name
+        )
+
+    @classmethod
+    def get_instance(cls) -> EnhancedParentDocumentRetriever:
         """获取 EnhancedParentDocumentRetriever 单例。"""
         if cls._pd_retriever is None:
-            raise RuntimeError("Retriever has not been initialized. Call RetrieverFactory.init() first.")
+            raise RuntimeError("Retriever has not been initialized. Call EnhancedParentDocumentRetrieverFactory.init() first.")
         return cls._pd_retriever
+
+
+class RetrievalParams:
+    """
+    检索使用的参数
+    """
+    def __init__(self, bm25_k: int, vector_k: int, vector_fetch_k: int, rrf_k: int, final_k: int):
+        self.bm25_k = bm25_k
+        self.vector_k = vector_k
+        self.vector_fetch_k = vector_fetch_k
+        self.rrf_k = rrf_k
+        self.final_k = final_k
+
+
+
+
+class _NLPPreprocessor:
+    """
+    NLP 预处理工具类（非 Pydantic 模型）。
+    独立于 HybridPDRetriever（Pydantic 子类），避免 _ 前缀属性被 Pydantic 包装为 ModelPrivateAttr。
+    """
+    _stop_words: set[str] = set()
+    _punctuation: set[str] = set()
+    _lemmatizer: WordNetLemmatizer | None = None
+    _initialized: bool = False
+
+    @classmethod
+    def init(cls):
+        """初始化 NLTK/jieba 预处理资源（只需调用一次）"""
+        if cls._initialized:
+            print("NLP PREPROCESSOR: Already initialized.")
+            return
+        print("NLP PREPROCESSOR: Downloading NLTK resources...")
+        nltk.download("punkt")
+        nltk.download("stopwords")
+        nltk.download("wordnet")
+        cls._stop_words = set(stopwords.words('english') + stopwords.words('chinese'))
+        cls._punctuation = set(string.punctuation) | set("，。！？【】（）《》""''：；、—…—")
+        cls._lemmatizer = WordNetLemmatizer()
+        cls._initialized = True
+        print("NLP PREPROCESSOR: Initialized successfully.")
+
+    @classmethod
+    def _is_english_word(cls, s: str) -> bool:
+        return all(ord(c) < 128 for c in s)
+
+    @classmethod
+    def bilingual_preprocess_func(cls, text: str) -> list[str]:
+        """中英文混合预处理函数，供 BM25Retriever 使用"""
+        text = text.lower()
+        tokens = jieba.lcut(text, cut_all=False)
+        processed_tokens = []
+        for token in tokens:
+            if token in cls._stop_words or token in cls._punctuation:
+                continue
+            if cls._is_english_word(token):
+                token = cls._lemmatizer.lemmatize(token)
+            if len(token) > 1:
+                processed_tokens.append(token)
+        return processed_tokens
+
+
+class HybridPDRetriever(EnsembleRetriever):
+    """
+    混合ParentDocument检索器: 使用BM25Retriever做关键词检索，使用EnhancedParentDocumentRetriever做向量检索，并进行RRF融合。
+    NOTE：需先通过 HybridPDRetrieverFactory.init() 创建实例
+    """
+
+    # ==== 实例级别方法 ====
+    def get_file_ids(self) -> set[str]:
+        """获取当前使用的文件ID集合"""
+        return self._file_ids
+
+    def _get_bm25_retriever(self) -> BM25Retriever:
+        if self._bm25_retriever is None:
+            raise RuntimeError("BM25Retriever has not been initialized. "
+                               "Call reset_file_ids() first.")
+        return self._bm25_retriever
+
+    def _get_pd_retriever(self) -> EnhancedParentDocumentRetriever:
+        if self._pd_retriever is None:
+            raise RuntimeError("EnhancedParentDocumentRetriever has not been initialized. "
+                               "Call reset_file_ids() first.")
+        return self._pd_retriever
+
+    def _get_retrieval_params(self) -> RetrievalParams:
+        if self._retrieval_params is None:
+            raise RuntimeError("Retrieval parameters have not been initialized. "
+                               "Call reset_file_ids() first.")
+        return self._retrieval_params
+
+    def reset_file_ids(self, file_ids: set[str], child_docs: list[Document] | None = None) -> int:
+        """
+        重置已选择的文件ID集合，并创建对应的BM25Retriever实例（使用child文档，BM25Plus变体），
+        重新设置search_kwargs以使用新的child文档集合进行检索。
+        如果file_ids为空，则重置两个Retriever为None
+        :param file_ids: 数据库中的文档ID列表
+        :param child_docs: 可选，file_ids对应的child文档列表.
+        :return: 0表示成功
+        """
+        self._file_ids = file_ids
+        if not file_ids:
+            self._bm25_retriever = None
+            self._pd_retriever = None
+            self._retrieval_params = None
+            print("HYBRID PD RETRIEVER: No file_ids provided, "
+                  "BM25Retriever and EnhancedParentDocumentRetriever have been reset to None.")
+            if child_docs:
+                print("HYBRID PD RETRIEVER: Warning: child_docs provided but file_ids is empty, "
+                      "child_docs will be ignored.")
+            return 0
+        if not child_docs:
+            raise ValueError("HYBRID PD RETRIEVER: child_docs must be provided when file_ids is not empty.")
+
+        # 创建BM25Retriever实例，使用BM25Plus
+        self._bm25_retriever = BM25Retriever.from_documents(
+            child_docs,
+            bm25_variant="plus",
+            preprocess_func=_NLPPreprocessor.bilingual_preprocess_func,
+        )
+
+        # 获取EnhancedParentDocumentRetriever（仅用于检索）
+        self._pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
+
+        # 设置检索参数
+        k = math.ceil(max(40, len(child_docs) // 8))
+        self._retrieval_params = RetrievalParams(
+            bm25_k=k,
+            vector_k=math.ceil(k * 0.8),
+            vector_fetch_k=math.ceil(k * 0.8 * 3),
+            rrf_k=math.ceil(10 + k * 0.2),
+            final_k=global_config.get("retriever", {}).get("final_k", 8)
+        )
+
+        return 0
+
+
+    def _prepare_retrieval(self, input: str) -> RetrievalParams:
+        """
+        invoke / ainvoke 的公共前置逻辑：参数校验、配置两个 retriever 的检索参数、
+        设置 self.retrievers，返回 RetrievalParams。
+        """
+        if not input:
+            print("HYBRID PD RETRIEVER INVOKE: Empty query provided.")
+            raise CustomException(code=400, message="查询语句不能为空，请输入查询语句")
+        file_ids = self.get_file_ids()
+        if not file_ids:
+            print("HYBRID PD RETRIEVER INVOKE: No file_ids configured.")
+            raise CustomException(code=400, message="未选择任何文档，请先选择文档进行检索")
+
+        bm25_retriever = self._get_bm25_retriever()
+        pd_retriever = self._get_pd_retriever()
+        params = self._get_retrieval_params()
+
+        # 配置 BM25
+        bm25_retriever.k = params.bm25_k
+
+        # 配置语义向量检索
+        search_kwargs = {
+            "filter": {
+                "file_id": {"$in": list(file_ids)}
+            },
+            "k": params.vector_k,
+        }
+        if pd_retriever.search_type == SearchType.mmr:
+            search_kwargs["fetch_k"] = params.vector_fetch_k
+        pd_retriever.search_kwargs = search_kwargs
+
+        # 设置 EnsembleRetriever 的 retrievers
+        self.retrievers = [bm25_retriever, pd_retriever]
+
+        print(f"HYBRID PD RETRIEVER INVOKE: query='{input[:50]}...', "
+              f"bm25_k={params.bm25_k}, vector_k={params.vector_k}, vector_fetch_k={params.vector_fetch_k}, rrf_k={params.rrf_k}, "
+              f"rrf_c={self.c}, final_k={params.final_k}, file_ids_count={len(file_ids)}")
+
+        return params
+
+    def invoke(
+        self,
+        input: str,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> list[Document]:
+        """
+        同步混合检索：RRF 融合后返回 final_k 个子 Document。
+        """
+        params = self._prepare_retrieval(input)
+        fused_results = super().invoke(input, config, **kwargs)
+        return fused_results[:params.final_k]
+
+    async def ainvoke(
+        self,
+        input: str,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> list[Document]:
+        """
+        异步混合检索：RRF 融合后返回 final_k 个子 Document。
+        """
+        params = self._prepare_retrieval(input)
+        fused_results = await super().ainvoke(input, config, **kwargs)
+        return fused_results[:params.final_k]
+
+
+# ======================== HybridPDRetrieverFactory ========================
+
+class HybridPDRetrieverFactory:
+    """
+    HybridPDRetriever 工厂（单例）。
+    职责：
+    1. 初始化 NLP 资源和 HybridPDRetriever 单例实例
+    2. 对外提供 get_instance() 获取单例
+    """
+    _instance: HybridPDRetriever | None = None
+
+    @classmethod
+    def init(cls) -> HybridPDRetriever:
+        """
+        初始化 HybridPDRetriever 单例。
+        会先初始化 NLP 资源，再创建实例。
+        """
+        if cls._instance is not None:
+            print("INIT HYBRID PD RETRIEVER: Instance already exists, returning cached instance.")
+            return cls._instance
+
+        # 初始化类级别 NLP 资源
+        _NLPPreprocessor.init()
+
+        # 创建实例，初始时 retrievers 为空列表
+        cls._instance = HybridPDRetriever(
+            retrievers=[],  # invoke 时动态设置
+            weights=[0.5, 0.5],  # BM25 和向量检索的权重
+            id_key="id",  # 用于 RRF 去重的文档唯一标识 metadata key
+        )
+        # 初始化实例级别属性（Pydantic model 不通过 __init__ 设置非 field 属性）
+        cls._instance._file_ids = set()
+        cls._instance._bm25_retriever = None
+        cls._instance._pd_retriever = None
+        cls._instance._retrieval_params = None
+
+        print("INIT HYBRID PD RETRIEVER: Initialized successfully.")
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls) -> HybridPDRetriever:
+        """获取 HybridPDRetriever 单例。未初始化时抛出异常。"""
+        if cls._instance is None:
+            raise RuntimeError("HybridPDRetriever has not been initialized. "
+                               "Call HybridPDRetrieverFactory.init() first.")
+        return cls._instance
+

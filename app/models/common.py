@@ -1,4 +1,5 @@
 from langchain_core.documents import Document
+from pydantic import Field
 
 
 class Result:
@@ -56,3 +57,23 @@ class SplitResult:
     def __init__(self, splitters: list[str], chunks: list[Document]):
         self.splitters = splitters
         self.chunks = chunks
+
+
+class EnhancedPDRetrieverAddDocumentsResult:
+    """
+    EnhancedParentDocumentRetriever工厂添加文档的结果类
+     - parent_splitter_name: 使用的父分块器名称，如果没有则为 None
+     - parent_doc_ids: 父文档 ID 有序列表
+     - children_count: 添加的子文档总数
+    """
+
+    def __init__(self, parent_doc_ids: list[str], children_count: int, parent_splitter_name: str | None = None):
+        self.parent_doc_ids = parent_doc_ids
+        self.children_count = children_count
+        self.parent_splitter_name = parent_splitter_name
+
+class SetReferencesDto:
+    """
+    设置参考文档的dto类
+    """
+    doc_ids: list[str] = Field(..., alias="docIds", description="文档ID列表")

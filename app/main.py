@@ -7,11 +7,11 @@ from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
 from app.core.chunking import SplitterRegistry
 from app.core.document_loader import DocumentLoaderChain
-from app.core.retriever import RetrieverFactory
+from app.core.retriever import EnhancedParentDocumentRetrieverFactory, HybridPDRetrieverFactory
 from app.core.embeddings import EmbeddingModelFactory
 from app.core.vector_store import VectorStoreFactory
 from app.exception.exception_handler import register_exception_handler
-from app.routers import document
+from app.routers import document, retriever
 
 
 @asynccontextmanager
@@ -28,7 +28,8 @@ async def lifespan(app: FastAPI):
     docstore = VectorStoreFactory.init_docstore()
     DocumentLoaderChain.init()
     SplitterRegistry.init()
-    RetrieverFactory.init(vectorstore, docstore)
+    EnhancedParentDocumentRetrieverFactory.init(vectorstore, docstore)
+    HybridPDRetrieverFactory.init()
     yield
     # 关闭：清理资源
     await DatabaseManager.close()
@@ -51,3 +52,4 @@ app.add_middleware(
 )
 
 app.include_router(document.router)
+app.include_router(retriever.router)

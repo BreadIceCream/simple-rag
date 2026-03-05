@@ -28,7 +28,7 @@ async def list_documents(db: AsyncSession):
 async def get_document_by_id(doc_id: str, db: AsyncSession) -> EmbeddedDocument:
     """
     获取文档详情
-    :param doc_id:
+    :param doc_id: 数据库中的文档ID
     :param db:
     :return: 文档详情，若不存在抛出异常
     """
@@ -38,6 +38,19 @@ async def get_document_by_id(doc_id: str, db: AsyncSession) -> EmbeddedDocument:
     if doc is None:
         raise CustomException(code=status.HTTP_400_BAD_REQUEST, message="文档不存在")
     return doc
+
+
+async def get_document_by_ids(doc_ids: list[str], db: AsyncSession) -> list[EmbeddedDocument]:
+    """
+    获取多个文档详情
+    :param doc_ids: 数据库中的文档ID列表
+    :param db:
+    :return: 文档详情无序列表
+    """
+    stmt = select(EmbeddedDocument).where(EmbeddedDocument.id.in_(doc_ids))
+    result = await db.execute(stmt)
+    docs = result.scalars().all()
+    return docs
 
 
 async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
@@ -105,7 +118,7 @@ async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentD
 async def delete_document(doc_id: str, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
     """
     删除文档，同时删除向量数据库中的相关数据
-    :param doc_id:
+    :param doc_id: 数据库中的文档ID
     :param pd_retriever:
     :param db:
     :return: 0 表示成功
