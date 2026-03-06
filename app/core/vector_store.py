@@ -41,7 +41,8 @@ class VectorStoreFactory:
             return cls._vector_store
 
         persist_dir = cls._get_vector_persist_directory()
-        print(f"INIT VECTOR STORE: Initializing (collection={collection_name}, persist={persist_dir})...")
+        print(f"INIT VECTOR STORE: Initializing (collection={collection_name}, persist={persist_dir}). "
+              f"NOTE: The same collection can only use embedding models with the same embedding dimension.")
 
         cls._vector_store = Chroma(
             collection_name=collection_name,

@@ -81,6 +81,35 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
             raise ValueError(f"No child documents found for parent_doc <{parent_doc_id}>")
         return children_docs
 
+    def get_parent_docs_from_children(self, children_docs: list[Document]):
+        """
+        根据子文档列表获取对应的父文档列表，使用父类_get_relevant_documents方法中的逻辑。
+        无需配置parent_splitter
+        :param children_docs:
+        :return: 父文档有序列表
+        """
+        # We do this to maintain the order of the IDs that are returned
+        ids = []
+        for d in children_docs:
+            if self.id_key in d.metadata and d.metadata[self.id_key] not in ids:
+                ids.append(d.metadata[self.id_key])
+        docs = self.docstore.mget(ids)
+        return [d for d in docs if d is not None]
+
+    async def aget_parent_docs_from_children(self, children_docs: list[Document]):
+        """
+        根据子文档列表获取对应的父文档列表，使用父类_aget_relevant_documents方法中的逻辑。
+        :param children_docs:
+        :return: 父文档有序列表
+        """
+        # We do this to maintain the order of the IDs that are returned
+        ids = []
+        for d in children_docs:
+            if self.id_key in d.metadata and d.metadata[self.id_key] not in ids:
+                ids.append(d.metadata[self.id_key])
+        docs = await self.docstore.amget(ids)
+        return [d for d in docs if d is not None]
+
     def delete_docs_cascade(self, parent_doc_ids: list[str]):
         """
         根据父文档 ID 列表级联删除父文档和对应的子文档。无需配置parent_splitter
@@ -243,6 +272,8 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
         if search_kwargs:
             current_search_kwargs.update(search_kwargs)
         print(f"SEARCHING VECTORSTORE: search_type={self.search_type}, search_kwargs={current_search_kwargs}")
+
+        # 执行和父类方法相同的向量检索逻辑，但直接返回子文档列表
         if self.search_type == SearchType.mmr:
             sub_docs = self.vectorstore.max_marginal_relevance_search(
                 query,
@@ -278,6 +309,8 @@ class EnhancedParentDocumentRetriever(ParentDocumentRetriever):
         if search_kwargs:
             current_search_kwargs.update(search_kwargs)
         print(f"SEARCHING VECTORSTORE ASYNC: search_type={self.search_type}, search_kwargs={current_search_kwargs}")
+
+        # 执行和父类方法相同的向量检索逻辑，但直接返回子文档列表
         if self.search_type == SearchType.mmr:
             sub_docs = await self.vectorstore.amax_marginal_relevance_search(
                 query,
@@ -501,51 +534,6 @@ class HybridPDRetriever(EnsembleRetriever):
                                "Call reset_file_ids() first.")
         return self._retrieval_params
 
-    def reset_file_ids(self, file_ids: set[str], child_docs: list[Document] | None = None) -> int:
-        """
-        重置已选择的文件ID集合，并创建对应的BM25Retriever实例（使用child文档，BM25Plus变体），
-        重新设置search_kwargs以使用新的child文档集合进行检索。
-        如果file_ids为空，则重置两个Retriever为None
-        :param file_ids: 数据库中的文档ID列表
-        :param child_docs: 可选，file_ids对应的child文档列表.
-        :return: 0表示成功
-        """
-        self._file_ids = file_ids
-        if not file_ids:
-            self._bm25_retriever = None
-            self._pd_retriever = None
-            self._retrieval_params = None
-            print("HYBRID PD RETRIEVER: No file_ids provided, "
-                  "BM25Retriever and EnhancedParentDocumentRetriever have been reset to None.")
-            if child_docs:
-                print("HYBRID PD RETRIEVER: Warning: child_docs provided but file_ids is empty, "
-                      "child_docs will be ignored.")
-            return 0
-        if not child_docs:
-            raise ValueError("HYBRID PD RETRIEVER: child_docs must be provided when file_ids is not empty.")
-
-        # 创建BM25Retriever实例，使用BM25Plus
-        self._bm25_retriever = BM25Retriever.from_documents(
-            child_docs,
-            bm25_variant="plus",
-            preprocess_func=_NLPPreprocessor.bilingual_preprocess_func,
-        )
-
-        # 获取EnhancedParentDocumentRetriever（仅用于检索）
-        self._pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
-
-        # 设置检索参数
-        k = math.ceil(max(40, len(child_docs) // 8))
-        self._retrieval_params = RetrievalParams(
-            bm25_k=k,
-            vector_k=math.ceil(k * 0.8),
-            vector_fetch_k=math.ceil(k * 0.8 * 3),
-            rrf_k=math.ceil(10 + k * 0.2),
-            final_k=global_config.get("retriever", {}).get("final_k", 8)
-        )
-
-        return 0
-
 
     def _prepare_retrieval(self, input: str) -> RetrievalParams:
         """
@@ -587,6 +575,62 @@ class HybridPDRetriever(EnsembleRetriever):
 
         return params
 
+
+    def reset_file_ids(self, file_ids: set[str], child_docs: list[Document] | None = None) -> int:
+        """
+        重置已选择的文件ID集合，并创建对应的BM25Retriever实例（使用child文档，BM25Plus变体），
+        重新设置search_kwargs以使用新的child文档集合进行检索。
+        如果file_ids为空，则重置两个Retriever为None
+        :param file_ids: 数据库中的文档ID列表
+        :param child_docs: 可选，file_ids对应的child文档列表.
+        :return: 0表示成功
+        """
+        self._file_ids = file_ids
+        if not file_ids:
+            self._bm25_retriever = None
+            self._pd_retriever = None
+            self._retrieval_params = None
+            print("HYBRID PD RETRIEVER: No file_ids provided, "
+                  "BM25Retriever and EnhancedParentDocumentRetriever have been reset to None.")
+            if child_docs:
+                print("HYBRID PD RETRIEVER: Warning: child_docs provided but file_ids is empty, "
+                      "child_docs will be ignored.")
+            return 0
+        if not child_docs:
+            raise ValueError("HYBRID PD RETRIEVER: child_docs must be provided when file_ids is not empty.")
+
+        # 创建BM25Retriever实例，使用BM25Plus
+        self._bm25_retriever = BM25Retriever.from_documents(
+            child_docs,
+            bm25_variant="plus",
+            preprocess_func=_NLPPreprocessor.bilingual_preprocess_func,
+        )
+
+        # 获取EnhancedParentDocumentRetriever（仅用于检索）
+        self._pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
+
+        # 设置检索参数
+        k = math.ceil(max(40, len(child_docs) // 8))
+        self._retrieval_params = RetrievalParams(
+            bm25_k=k,
+            vector_k=math.ceil(k * 0.8),
+            vector_fetch_k=math.ceil(k * 0.8 * 3),
+            rrf_k=math.ceil(10 + k * 0.2),
+            final_k=self._retriever_config.get("final_k", 8)
+        )
+
+        return 0
+
+
+    def merge_continuous_parent_docs(self, parent_docs: list[Document]) -> list[Document]:
+        """
+        合并连续的父文档块，如果它们的 parent_index 是连续的且属于同一个文件（file_id相同），则合并它们的文本内容。
+        合并到连续块中第一个父文档的文本中，保持顺序。
+        :param parent_docs:
+        :return:
+        """
+        # todo
+
     def invoke(
         self,
         input: str,
@@ -594,11 +638,21 @@ class HybridPDRetriever(EnsembleRetriever):
         **kwargs: Any,
     ) -> list[Document]:
         """
-        同步混合检索：RRF 融合后返回 final_k 个子 Document。
+        同步混合检索。
+        RRF 融合后返回 rrf_k 个子 Document，获取对应父文档列表，执行可选的 rerank 后返回 final_k 个父Document。
         """
         params = self._prepare_retrieval(input)
         fused_results = super().invoke(input, config, **kwargs)
-        return fused_results[:params.final_k]
+        # 获取 rrf_k 个子 Document 对应的父文档列表，保持顺序
+        children_docs = fused_results[:params.rrf_k]
+        parent_docs = self._get_pd_retriever().get_parent_docs_from_children(children_docs)
+        # 可选的 rerank 逻辑
+        if not self._retriever_config.get("reranker", {}).get("enabled", False):
+            print("HYBRID PD RETRIEVER INVOKE: Reranker is disabled, skipping reranking step.")
+            return parent_docs[:params.final_k]
+        print("HYBRID PD RETRIEVER INVOKE: Reranker is enabled, performing reranking step...")
+        # todo 执行重排序
+        return parent_docs[:params.final_k]
 
     async def ainvoke(
         self,
@@ -607,11 +661,21 @@ class HybridPDRetriever(EnsembleRetriever):
         **kwargs: Any,
     ) -> list[Document]:
         """
-        异步混合检索：RRF 融合后返回 final_k 个子 Document。
+        异步混合检索：RRF 融合后返回 rrf_k 个子 Document。
         """
         params = self._prepare_retrieval(input)
         fused_results = await super().ainvoke(input, config, **kwargs)
-        return fused_results[:params.final_k]
+        # 获取 rrf_k 个子 Document 对应的父文档列表，保持顺序
+        children_docs = fused_results[:params.rrf_k]
+        parent_docs = await self._get_pd_retriever().aget_parent_docs_from_children(children_docs)
+        # 可选的 rerank 逻辑
+        if not self._retriever_config.get("reranker", {}).get("enabled", False):
+            print("HYBRID PD RETRIEVER AINVOKE: Reranker is disabled, skipping reranking step.")
+            return parent_docs[:params.final_k]
+        print("HYBRID PD RETRIEVER AINVOKE: Reranker is enabled, performing reranking step...")
+        # todo 执行重排序
+        return parent_docs[:params.final_k]
+
 
 
 # ======================== HybridPDRetrieverFactory ========================
@@ -649,6 +713,7 @@ class HybridPDRetrieverFactory:
         cls._instance._bm25_retriever = None
         cls._instance._pd_retriever = None
         cls._instance._retrieval_params = None
+        cls._instance._retriever_config = global_config.get("retriever", {})  # 可选的 rerank 开关，默认为 False
 
         print("INIT HYBRID PD RETRIEVER: Initialized successfully.")
         return cls._instance
