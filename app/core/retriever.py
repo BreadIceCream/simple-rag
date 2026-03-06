@@ -25,6 +25,7 @@ from nltk.corpus import stopwords
 
 from app.config.global_config import global_config
 from app.core.chunking import SplitterRegistry
+from app.core.reranker import RerankerFactory
 from app.exception.exception import CustomException
 from app.models.common import EnhancedPDRetrieverAddDocumentsResult
 
@@ -610,12 +611,12 @@ class HybridPDRetriever(EnsembleRetriever):
         self._pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
 
         # 设置检索参数
-        k = math.ceil(max(40, len(child_docs) // 8))
+        k = math.ceil(min(50, max(10, math.ceil(len(child_docs) * 0.1)))) # k根据child_docs数量动态调整，范围在10-50之间
         self._retrieval_params = RetrievalParams(
             bm25_k=k,
-            vector_k=math.ceil(k * 0.8),
-            vector_fetch_k=math.ceil(k * 0.8 * 3),
-            rrf_k=math.ceil(10 + k * 0.2),
+            vector_k=k,
+            vector_fetch_k=math.ceil(min(len(child_docs), k * 3)),
+            rrf_k=math.ceil(k * 0.5),
             final_k=self._retriever_config.get("final_k", 8)
         )
 
@@ -624,8 +625,8 @@ class HybridPDRetriever(EnsembleRetriever):
 
     def merge_continuous_parent_docs(self, parent_docs: list[Document]) -> list[Document]:
         """
-        合并连续的父文档块，如果它们的 parent_index 是连续的且属于同一个文件（file_id相同），则合并它们的文本内容。
-        合并到连续块中第一个父文档的文本中，保持顺序。
+        合并连续的父文档块，如果它们的 parent_index 是连续的且属于同一个文件（file_id相同），则合并它们。
+        合并到连续块中第一个父文档中，保持顺序。
         :param parent_docs:
         :return:
         """
@@ -643,16 +644,27 @@ class HybridPDRetriever(EnsembleRetriever):
         """
         params = self._prepare_retrieval(input)
         fused_results = super().invoke(input, config, **kwargs)
+
         # 获取 rrf_k 个子 Document 对应的父文档列表，保持顺序
         children_docs = fused_results[:params.rrf_k]
         parent_docs = self._get_pd_retriever().get_parent_docs_from_children(children_docs)
+
         # 可选的 rerank 逻辑
         if not self._retriever_config.get("reranker", {}).get("enabled", False):
             print("HYBRID PD RETRIEVER INVOKE: Reranker is disabled, skipping reranking step.")
             return parent_docs[:params.final_k]
-        print("HYBRID PD RETRIEVER INVOKE: Reranker is enabled, performing reranking step...")
-        # todo 执行重排序
-        return parent_docs[:params.final_k]
+
+        # 数量 <= final_k 时跳过重排，直接返回
+        if len(parent_docs) <= params.final_k:
+            print(f"HYBRID PD RETRIEVER INVOKE: parent_docs count ({len(parent_docs)}) <= final_k ({params.final_k}), "
+                  f"skipping reranking step.")
+            return parent_docs
+
+        print(f"HYBRID PD RETRIEVER INVOKE: Reranking {len(parent_docs)} parent docs...")
+        reranker = RerankerFactory.get_instance()
+        reranked_docs = reranker.compress_documents(parent_docs, input)
+        return list(reranked_docs[:params.final_k])
+
 
     async def ainvoke(
         self,
@@ -661,20 +673,32 @@ class HybridPDRetriever(EnsembleRetriever):
         **kwargs: Any,
     ) -> list[Document]:
         """
-        异步混合检索：RRF 融合后返回 rrf_k 个子 Document。
+        异步混合检索。
+        RRF 融合后返回 rrf_k 个子 Document，获取对应父文档列表，执行可选的 rerank 后返回 final_k 个父Document。
         """
         params = self._prepare_retrieval(input)
         fused_results = await super().ainvoke(input, config, **kwargs)
+
         # 获取 rrf_k 个子 Document 对应的父文档列表，保持顺序
         children_docs = fused_results[:params.rrf_k]
         parent_docs = await self._get_pd_retriever().aget_parent_docs_from_children(children_docs)
+
         # 可选的 rerank 逻辑
         if not self._retriever_config.get("reranker", {}).get("enabled", False):
             print("HYBRID PD RETRIEVER AINVOKE: Reranker is disabled, skipping reranking step.")
             return parent_docs[:params.final_k]
-        print("HYBRID PD RETRIEVER AINVOKE: Reranker is enabled, performing reranking step...")
-        # todo 执行重排序
-        return parent_docs[:params.final_k]
+
+        # 数量 <= final_k 时跳过重排，直接返回
+        if len(parent_docs) <= params.final_k:
+            print(f"HYBRID PD RETRIEVER AINVOKE: parent_docs count ({len(parent_docs)}) <= final_k ({params.final_k}), "
+                  f"skipping reranking step.")
+            return parent_docs
+
+        print(f"HYBRID PD RETRIEVER AINVOKE: Reranking {len(parent_docs)} parent docs...")
+        reranker = RerankerFactory.get_instance()
+        reranked_docs = await reranker.acompress_documents(parent_docs, input)
+        return list(reranked_docs[:params.final_k])
+
 
 
 
