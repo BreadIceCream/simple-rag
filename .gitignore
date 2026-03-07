@@ -1,5 +1,4 @@
 .env
-.env-backup
 .idea
 docs/
 demo.ipynb

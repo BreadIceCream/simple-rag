@@ -7,8 +7,8 @@ from app.config.db_config import DatabaseManager
 from app.core.retriever import EnhancedParentDocumentRetrieverFactory, EnhancedParentDocumentRetriever, \
     HybridPDRetrieverFactory, HybridPDRetriever
 from app.crud import retriever
-from app.models.common import Result
-from app.models.schemas import EmbeddedDocumentVO
+from app.models.common import Result, EmbeddedDocumentVO
+
 
 router = APIRouter(prefix="/api/retrieval", tags=["retrieval"])
 

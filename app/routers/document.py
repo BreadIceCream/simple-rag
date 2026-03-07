@@ -7,8 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.db_config import DatabaseManager
 from app.core.retriever import EnhancedParentDocumentRetrieverFactory, EnhancedParentDocumentRetriever
 from app.crud import document
-from app.models.common import Result
-from app.models.schemas import EmbeddedDocumentVO
+from app.models.common import Result, EmbeddedDocumentVO
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 

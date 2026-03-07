@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import String, Integer, DateTime, JSON, Text
@@ -27,20 +28,31 @@ class EmbeddedDocument(Base):
     def __repr__(self):
         return f"<EmbeddedDocument(id={self.id}, file_path={self.path}, filename={self.file_name}), >"
 
-class EmbeddedDocumentVO(BaseModel):
-    """
-    嵌入文档的视图对象（VO），用于 API 层与前端交互，不包含分块相关信息
-    """
 
-    id: str = Field(..., description="文档唯一标识(UUID)")
-    path: str = Field(..., description="文件路径/url,唯一")
-    is_url: bool = Field(..., description="是否为URL")
-    file_directory: str | None = Field(None, description="文件目录,仅本地文件使用")
-    file_name: str | None = Field(None, description="文件名")
-    file_extension: str = Field(..., description="文件后缀名(如 .pdf)")
-    mime_type: str | None = Field(None, description="文件mime类型")
-    last_modified: datetime | None = Field(None, description="文件最后修改时间,仅本地文件使用")
+# ======================== 对话相关模型 ========================
 
-    model_config = ConfigDict(
-        from_attributes=True # 支持从 ORM 模型创建 Pydantic 模型
-    )
+
+class Conversation(Base):
+    """对话（线程）记录"""
+    __tablename__ = "conversation"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="对话 UUID，同时作为 LangGraph thread_id")
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="新对话", comment="对话标题（LLM 自动生成）")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, comment="最后更新时间")
+
+    def __repr__(self):
+        return f"<Conversation(id={self.id}, title={self.title})>"
+
+
+class ChatHistory(Base):
+    """单条聊天记录"""
+    __tablename__ = "chat_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="消息自增 ID")
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="关联的对话 ID（逻辑外键）")
+    role: Mapped[str] = mapped_column(String(16), nullable=False, comment="消息角色: user / ai")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="消息内容")
+    parent_doc_ids: Mapped[list[str]] = mapped_column(JSON, default=list, comment="本次检索到的父文档 doc.id 列表（直接回复时为空）")
+
+    def __repr__(self):
+        return f"<ChatHistory(id={self.id}, conversation_id={self.conversation_id}, role={self.role})>"

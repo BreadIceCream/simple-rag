@@ -1,3 +1,4 @@
+import os
 from getpass import getpass
 
 import torch
@@ -34,24 +35,20 @@ class EmbeddingModelFactory:
             device = "cuda"
         print(f"INIT EMBEDDING MODEL: device {device}")
         embedding_config = global_config.get("embedding")
-        if embedding_config.get("openai_embedding") == "true":
-            print("INIT EMBEDDING MODEL: Using OpenAI embedding model...")
-            openai_embedding_config = global_config.get("openai").get("embedding")
-            base_url = openai_embedding_config.get("base_url")
+        embedding_model = embedding_config.get("model")
+        if embedding_config.get("openai", {}).get("enabled", False):
+            print(f"INIT EMBEDDING MODEL: Using OpenAI embedding model <{embedding_model}>...")
             cls._instance = OpenAIEmbeddings(
-                model=openai_embedding_config.get("model"),
-                base_url=base_url if base_url else None,
-                api_key=SecretStr(openai_embedding_config.get("api_key")),
+                model=embedding_model,
             )
         else:
-            embedding_model = embedding_config.get("model")
-            if embedding_config.get("huggingface_remote_inference").get("enabled"):
+            if embedding_config.get("huggingface_remote_inference", {}).get("enabled", False):
                 print(f"INIT EMBEDDING MODEL REMOTE: Using HuggingFace Inference API embedding model <{embedding_model}>...")
-                api_token = embedding_config.get("huggingface_remote_inference").get("api_token")
-                if not api_token:
-                    api_token = getpass("请输入 HuggingFace Inference API 的 API Token: ")
+                api_token = os.environ["HUGGINGFACE_API_TOKEN"] \
+                    if "HUGGINGFACE_API_TOKEN" in os.environ \
+                    else getpass("Enter HuggingFace API Token: ")
                 cls._instance = HuggingFaceInferenceAPIEmbeddings(
-                    api_key=api_token,
+                    api_key=SecretStr(api_token),
                     model_name=embedding_model,
                 )
             else:

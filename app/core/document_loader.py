@@ -1,6 +1,7 @@
 import os
 import time
 from abc import abstractmethod, ABC
+from pathlib import Path
 
 from langchain_community.document_loaders import PyPDFLoader, BSHTMLLoader, WebBaseLoader
 from langchain_community.document_loaders.parsers import RapidOCRBlobParser
@@ -20,7 +21,7 @@ SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSION | HTML_EXTENSIONS
 
 def _get_file_extension(file_path: str) -> str:
     """获取文件后缀（含点号），如 '.pdf', '.md'"""
-    return os.path.splitext(file_path)[1].lower()
+    return Path(file_path).suffix
 
 
 def _validate_local_file(file_path: str) -> str:

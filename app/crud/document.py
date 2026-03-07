@@ -1,6 +1,7 @@
 import os.path
 import time
 import uuid
+from pathlib import Path
 
 import filetype
 from sqlalchemy import select
@@ -85,10 +86,11 @@ async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentD
             file_ext = ".html"
             mime_type = "text/html"
         else:
-            file_dir = os.path.dirname(os.path.abspath(path))
-            file_name = os.path.basename(path)
+            file = Path(path)
+            file_dir = str(file.parent.resolve())
+            file_name = file.name
             last_modified = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(path)))
-            file_ext = os.path.splitext(path)[1].lower()
+            file_ext = file.suffix
             mime_type = filetype.guess_mime(path)
         embedded_doc = EmbeddedDocument(
             id=file_id,

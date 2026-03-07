@@ -9,10 +9,11 @@ from app.core.chunking import SplitterRegistry
 from app.core.document_loader import DocumentLoaderChain
 from app.core.reranker import RerankerFactory
 from app.core.retriever import EnhancedParentDocumentRetrieverFactory, HybridPDRetrieverFactory
+from app.core.graph import Graph
 from app.core.embeddings import EmbeddingModelFactory
 from app.core.vector_store import VectorStoreFactory
 from app.exception.exception_handler import register_exception_handler
-from app.routers import document, retriever
+from app.routers import document, retriever, conversation
 
 
 @asynccontextmanager
@@ -32,8 +33,10 @@ async def lifespan(app: FastAPI):
     EnhancedParentDocumentRetrieverFactory.init(vectorstore, docstore)
     RerankerFactory.init()
     HybridPDRetrieverFactory.init()
+    Graph.build()
     yield
     # 关闭：清理资源
+    Graph.close()
     await DatabaseManager.close()
 
 app = FastAPI(lifespan=lifespan)
@@ -55,3 +58,4 @@ app.add_middleware(
 
 app.include_router(document.router)
 app.include_router(retriever.router)
+app.include_router(conversation.router)
