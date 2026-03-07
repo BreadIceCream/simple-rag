@@ -1,0 +1,44 @@
+env_override: true
+
+database:
+  url: postgresql+asyncpg://postgres:pg123456@localhost:5432/simple_rag # postgres
+#  url: "mysql+aiomysql://root:123456@localhost:3306/simple_rag?charset=utf8" # mysql
+
+chat_model:
+  # 确保你使用的模型API_KEY已经设置（.env或环境变量）
+  default: gpt-5-mini  # 默认模型
+  light: gpt-4o-mini   # 轻巧模型，用于Self-reflection自我检查任务
+
+embedding:
+  model: Qwen/Qwen3-Embedding-0.6B
+  openai:
+    # 若开启，请更改model为OpenAI支持的embedding模型（如text-embedding-3-small）
+    # 并确保已正确配置OpenAI API Key（.env或环境变量）
+    enabled: false
+  huggingface_remote_inference:
+    # 若开启，请确保已正确配置HuggingFace API Token（.env或环境变量）
+    enabled: false
+
+chunking:
+  parent:
+    chunk_size: 1000
+    chunk_overlap: 120
+  child:
+    chunk_size: 256
+    chunk_overlap: 50
+
+vector_store:
+  collection_name: default
+
+retriever:
+  final_k: 8
+  reranker:
+    enabled: true
+
+chat:
+  max_rewrite_time: 2
+  max_regenerate_time: 1
+  message_summarize_threshold: 10
+
+# 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter
+text_file_length_threshold: 1500

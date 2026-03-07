@@ -7,5 +7,4 @@ store/
 **/parent_docs
 __pycache__
 todos.md
-config.yml
 .agents/
