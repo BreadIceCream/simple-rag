@@ -6,5 +6,4 @@ store/
 **/chroma_langchain_db
 **/parent_docs
 __pycache__
-todos.md
 .agents/

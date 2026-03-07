@@ -295,7 +295,7 @@ async def init_tool_infos():
         tools_by_name[tool.name] = tool
         if tool.name != retrieve.name:
             tools_without_retrieve.append(tool)
-    print(f"INIT TOOL INFO: Find {len(tools)} tools")
+    print(f"INIT TOOL INFO: Find {len(tools)} _tools")
 
 
 # =========================================================================
@@ -368,7 +368,7 @@ def tool_node(state: OverallState):
 
 
 def should_use_tool(state: OverallState) -> Literal["tool_node", "__end__"]:
-    """Decides whether to use the tools. And send the state to relevant nodes."""
+    """Decides whether to use the _tools. And send the state to relevant nodes."""
     last_message = state["messages"][-1]
     if last_message.tool_calls:
         return "tool_node"
@@ -384,7 +384,7 @@ Here is the original user question:
 {user_question}
 """
 QUERY_PROMPT_STR = """
-You are a helpful assistant.You have access to some tools.Use these tools to better answer user's question.
+You are a helpful assistant.You have access to some _tools.Use these _tools to better answer user's question.
 
 Here is the original user question:
 {user_question}
