@@ -35,7 +35,7 @@ from app.models.state import GraphState, GradeDocuments, HallucinationCheck, Use
 # ======================== 元数据过滤 ========================
 
 # retrieve tool 返回的父文档中需要保留的 metadata 字段
-KEPT_METADATA_KEYS = {"file_id", "path", "file_extension", "parent_index", "Header 1"}
+KEPT_METADATA_KEYS = {"file_id", "file_extension", "parent_index", "Header 1"}
 
 
 def _filter_metadata(metadata: dict) -> dict:
@@ -69,7 +69,7 @@ def retrieve(query: str) -> str:
 GRADE_DOCUMENTS_PROMPT = (
     "你是一个评估检索文档与用户问题相关性的评分员。\n"
     "以下是检索到的文档:\n\n{context}\n\n"
-    "以下是用户问题: {question}\n"
+    "以下是用户问题: \n\n'{question}'\n\n"
     "如果文档包含与用户问题相关的关键词或语义信息，则评为相关。\n"
     "请直接给出 'yes' 或 'no' 的二元评分，表示文档是否与问题相关。"
 )
@@ -77,7 +77,7 @@ GRADE_DOCUMENTS_PROMPT = (
 REWRITE_QUESTION_PROMPT = (
     "你是一个问题重写器。请分析以下问题的语义意图，\n"
     "将其重写为一个更适合检索的优化问题。\n\n"
-    "原始问题: {question}\n\n"
+    "原始问题: '{question}'\n\n"
     "请直接输出优化后的问题:"
 )
 
@@ -85,14 +85,14 @@ GENERATE_ANSWER_PROMPT = (
     "你是一个问答助手。请根据以下检索到的上下文来回答问题。\n"
     "如果你不知道答案，请直接说不知道。\n"
     "回答应当精炼准确。\n\n"
-    "问题: {question}\n"
-    "上下文: {context}"
+    "问题: \n'{question}'\n\n"
+    "上下文: \n'{context}'"
 )
 
 CHECK_HALLUCINATION_PROMPT = (
     "你是一个评估 LLM 回答是否基于检索文档的评分员。\n"
     "以下是检索到的文档:\n\n{documents}\n\n"
-    "以下是 LLM 的回答:\n\n{generation}\n\n"
+    "以下是 LLM 的回答:\n\n'{generation}'\n\n"
     "请判断该回答是否基于/受支持于检索到的文档（无幻觉）。\n"
     "直接给出 'yes'（基于文档，无幻觉）或 'no'（存在幻觉）的评分。"
 )
@@ -239,7 +239,7 @@ class Graph:
         response = cls._response_llm.invoke([HumanMessage(content=prompt)])
         return {
             "messages": [response],
-            "regenerate_count": state.get("regenerate_count", 0) + 1,
+            "generate_count": state.get("generate_count", 0) + 1,
         }
 
     @classmethod
@@ -342,10 +342,10 @@ class Graph:
         writer = get_stream_writer()
         writer({cls._event_description: "Checking for hallucination...", cls._status_key: "progress"})
 
-        # 防无限循环: 重新生成次数超过上限时强制通过
-        max_regenerate = cls._chat_config.get("max_regenerate_time", 2)
-        if state.get("regenerate_count", 0) > max_regenerate:
-            print(f"GRAPH: regenerate_count ({state['regenerate_count']}) > max_regenerate_time ({max_regenerate}), "
+        # 防无限循环: 生成次数>=上限时强制通过
+        max_generate = cls._chat_config.get("max_generate_time", 2)
+        if state.get("generate_count", 0) >= max_generate:
+            print(f"GRAPH: generate_count ({state['generate_count']}) > max_generate_time ({max_generate}), "
                   f"forcing check_usefulness.")
             writer({cls._event_description: "Max regeneration attempts reached, proceeding with current answer.", cls._status_key: "progress"})
             return "check_usefulness"
@@ -485,7 +485,7 @@ class Graph:
             graph = Graph.get_compiled_graph()
             result = graph.invoke(
                 {"messages": [{"role": "user", "content": "..."}], "original_message": "..."},
-                {"configurable": {"thread_id": "session_123"}},
+                {"configurable": {"conversation_id": "session_123"}},
             )
         """
         if cls._compiled_graph is not None:
@@ -495,7 +495,7 @@ class Graph:
         # ---- 读取配置 ----
         cls._chat_config = global_config.get("chat", {})
         print(f"GRAPH: chat config loaded: max_rewrite_time={cls._chat_config.get('max_rewrite_time', 3)}, "
-              f"max_regenerate_time={cls._chat_config.get('max_regenerate_time', 2)}, "
+              f"max_generate_time={cls._chat_config.get('max_generate_time', 2)}, "
               f"message_summarize_threshold={cls._chat_config.get('message_summarize_threshold', 10)}")
 
         # ---- 初始化 LLM ----

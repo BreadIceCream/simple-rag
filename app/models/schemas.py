@@ -36,9 +36,10 @@ class Conversation(Base):
     """对话（线程）记录"""
     __tablename__ = "conversation"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="对话 UUID，同时作为 LangGraph thread_id")
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="对话 UUID，同时作为 LangGraph conversation_id")
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="新对话", comment="对话标题（LLM 自动生成）")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, comment="最后更新时间")
+    checkpoint_id: Mapped[str] = mapped_column(String(36), nullable=True, comment="LangGraph中断或结束时的checkpoint ID")
 
     def __repr__(self):
         return f"<Conversation(id={self.id}, title={self.title})>"

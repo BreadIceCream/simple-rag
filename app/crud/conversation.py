@@ -16,7 +16,7 @@ from app.models.schemas import Conversation, ChatHistory
 async def create_conversation(conversation_id: str, title: str, db: AsyncSession) -> Conversation:
     """
     创建新对话
-    :param conversation_id: 对话 UUID（同时作为 LangGraph thread_id）
+    :param conversation_id: 对话 UUID（同时作为 LangGraph conversation_id）
     :param title: 对话标题
     :param db:
     :return: 创建的 Conversation 对象
@@ -67,6 +67,16 @@ async def update_conversation_title(conversation_id: str, title: str, db: AsyncS
     await db.commit()
     await db.refresh(conv)
     return conv
+
+
+async def update_conversation_checkpoint_id(conversation_id: str, checkpoint_id: str | None, db: AsyncSession):
+    """
+    更新对话的 checkpoint ID
+    """
+    conv = await get_conversation(conversation_id, db)
+    conv.checkpoint_id = checkpoint_id
+    # 更新不需要修改 updated_at 或者可以依赖 onupdate
+    await db.commit()
 
 
 async def delete_conversation(conversation_id: str, db: AsyncSession):

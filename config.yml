@@ -1,4 +1,4 @@
-env_override: true
+env_override: false
 
 database:
   url: postgresql+asyncpg://postgres:pg123456@localhost:5432/simple_rag # postgres
@@ -37,7 +37,7 @@ retriever:
 
 chat:
   max_rewrite_time: 2
-  max_regenerate_time: 1
+  max_generate_time: 3
   message_summarize_threshold: 10
 
 # 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter

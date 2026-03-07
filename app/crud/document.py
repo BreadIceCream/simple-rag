@@ -46,12 +46,15 @@ async def get_document_by_ids(doc_ids: list[str], db: AsyncSession) -> list[Embe
     获取多个文档详情
     :param doc_ids: 数据库中的文档ID列表
     :param db:
-    :return: 文档详情无序列表
+    :return: 合法的文档详情有序列表
     """
     stmt = select(EmbeddedDocument).where(EmbeddedDocument.id.in_(doc_ids))
     result = await db.execute(stmt)
     docs = result.scalars().all()
-    return docs
+    # 按照输入的 doc_ids 顺序返回文档详情列表，未找到的文档直接过滤
+    doc_dict = {doc.id: doc for doc in docs}
+    ordered_docs = [doc_dict[doc_id] for doc_id in doc_ids if doc_id in doc_dict]
+    return ordered_docs
 
 
 async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):

@@ -101,8 +101,27 @@ class EmbeddedDocumentVO(BaseModel):
 
 # ======================== 对话相关的返回模型 ========================
 
+class ChatReferenceParentDocVO(BaseModel):
+    """聊天参考资料中父文档的视图对象"""
+    id: str = Field(..., description="父文档ID")
+    parent_index: int = Field(..., description="父文档在原文件中的分块顺序索引")
+    content: str = Field(..., description="父文档内容")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatReferenceVO(BaseModel):
+    """聊天参考资料的视图对象，表示某一个文件或url"""
+    id: str = Field(..., description="数据库中的文档UUID（即文件ID）")
+    path: str = Field(..., description="文件路径/url,唯一")
+    file_name: str | None = Field(None, description="文件名")
+    parent_docs: list[ChatReferenceParentDocVO] = Field(default_factory=list, description="相关父文档列表")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ConversationVO(BaseModel):
-    """对话列表项的视图对象"""
+    """对话的视图对象"""
     id: str = Field(..., description="对话 ID")
     title: str = Field(..., description="对话标题")
     created_at: datetime | None = Field(None, description="创建时间")
@@ -111,16 +130,50 @@ class ConversationVO(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ChatMessageVO(BaseModel):
-    """聊天记录项的视图对象"""
+    """一条对话记录的视图对象"""
     id: int = Field(..., description="消息 ID")
     role: str = Field(..., description="消息角色 (user/ai)")
     content: str = Field(..., description="消息内容")
-    parent_doc_ids: list[str] = Field(default_factory=list, description="父文档 ID 列表")
+    references: list[ChatReferenceVO] = Field(default_factory=list, description="消息相关的参考资料列表")
     created_at: datetime | None = Field(None, description="创建时间")
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class ChatHistoryResponseVO(BaseModel):
     """获取聊天历史接口的外层视图对象"""
     conversation_id: str = Field(..., description="对话 ID")
     messages: list[ChatMessageVO] = Field(default_factory=list, description="消息列表")
+
+
+# ======================== SSE 流式输出对应的视图对象 ========================
+
+class SseTokenVO(BaseModel):
+    """Token 进度输出"""
+    event: str = Field("Token streaming.", description="事件名")
+    status: str = Field("progress", description="状态")
+    token: str = Field(..., description="新生成的 Token")
+
+
+class SseAnswerVO(BaseModel):
+    """最终回答与参考文档"""
+    event: str = Field("Answer generated.", description="事件名")
+    status: str = Field("finished", description="状态")
+    answer: str = Field(..., description="最终生成的完整回答")
+    references: list[dict] = Field(default_factory=list, description="参考文档列表")
+    conversation_id: str = Field(..., description="对话 ID / Thread ID")
+
+
+class SseErrorVO(BaseModel):
+    """流式输出过程中的异常"""
+    event: str = Field("Error", description="事件名")
+    status: str = Field("error", description="状态")
+    message: str = Field(..., description="错误信息")
+    code: int | None = Field(None, description="错误码")
+    conversation_id: str = Field(..., description="对话 ID / Thread ID")
+
+
+class SseDoneVO(BaseModel):
+    """结束事件"""
+    event: str = Field("Done", description="事件名")
+    status: str = Field("finished", description="状态")
