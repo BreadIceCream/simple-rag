@@ -45,7 +45,8 @@ register_exception_handler(app)
 
 origins = [
     "http://localhost:3000",
-    "http://localhost:5173"
+    "http://localhost:5173",
+    "http://localhost:63342",
 ]
 
 app.add_middleware(
