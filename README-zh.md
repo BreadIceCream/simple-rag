@@ -1,6 +1,6 @@
 # Simple RAG (检索增强生成) 系统
 
-[English Version](./README.md)
+[English Version](./README.md)      [前端项目](https://github.com/BreadIceCream/simple-rag-frontend)
 
 基于 **LangChain**、**LangGraph** 和 **FastAPI** 开发的高级 **Agentic RAG** 系统后端服务，支持多模态文档检索。它具有智能反射状态机、混合检索策略（BM25 + 向量语义搜索 + RRF）、分层切分（Small-to-Big）和重排序（Re-ranking）功能，通过 SSE 流式传输提供高精度且无幻觉的对话体验。
 

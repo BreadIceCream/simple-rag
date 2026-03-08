@@ -21,7 +21,7 @@ from app.core.retriever import EnhancedParentDocumentRetrieverFactory
 from app.crud import conversation as conv_crud, document
 from app.exception.exception import CustomException
 from app.models.common import Result, ConversationVO, ChatMessageVO, ChatHistoryResponseVO, ChatReferenceParentDocVO, \
-    ChatReferenceVO, SseTokenVO, SseAnswerVO, SseErrorVO, SseDoneVO
+    ChatReferenceVO, SseTokenVO, SseAnswerVO, SseErrorVO, SseDoneVO, SseConversationVO
 
 router = APIRouter(prefix="/api/conversation", tags=["conversation"])
 
@@ -63,7 +63,7 @@ async def chat(
     if is_new_conversation:
         title_task = asyncio.create_task(Graph.generate_title_async(message))
         title = await title_task
-        await conv_crud.create_conversation(conversation_id_str, title, db)
+        new_conv = await conv_crud.create_conversation(conversation_id_str, title, db)
 
     # 检查是否需要从异常中恢复
     is_resuming = False
@@ -79,6 +79,12 @@ async def chat(
 
     async def event_stream():
         """SSE 事件流生成器"""
+        # 如果是新对话，在流的开头推送会话信息
+        if is_new_conversation and new_conv:
+            conv_vo = ConversationVO.model_validate(new_conv)
+            sse_conv = SseConversationVO(conversation=conv_vo)
+            yield f"data: {sse_conv.model_dump_json()}\n\n"
+
         final_answer = None
         parent_doc_ids = []  # 存储检索到的文档 ID 有序无重复列表
         parent_docs = [] # 存储检索到的文档对象列表，保持与 parent_doc_ids 顺序一致

@@ -1,6 +1,6 @@
 # Simple RAG (Retrieval-Augmented Generation) System
 
-[中文版本](./README-zh.md)
+[中文版本](./README-zh.md)      [Front End Project](https://github.com/BreadIceCream/simple-rag-frontend)
 
 An advanced **Agentic RAG** system backend service developed based on **LangChain**, **LangGraph**, and **FastAPI**, supporting multimodal document retrieval. It features an intelligent reflective state machine, a hybrid retrieval strategy (BM25 + Vector Semantic Search + RRF), hierarchical chunking (Small-to-Big), and Re-ranking, offering highly accurate and hallucination-free conversations via SSE streaming.
 

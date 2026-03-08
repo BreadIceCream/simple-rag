@@ -148,6 +148,13 @@ class ChatHistoryResponseVO(BaseModel):
 
 # ======================== SSE 流式输出对应的视图对象 ========================
 
+class SseConversationVO(BaseModel):
+    """新对话创建事件"""
+    event: str = Field("Conversation created.", description="事件名")
+    status: str = Field("progress", description="状态")
+    conversation: ConversationVO = Field(..., description="新对话信息")
+
+
 class SseTokenVO(BaseModel):
     """Token 进度输出"""
     event: str = Field("Token streaming.", description="事件名")

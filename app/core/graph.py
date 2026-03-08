@@ -112,7 +112,8 @@ SUMMARIZE_CONVERSATION_PROMPT = (
 DECIDE_SYSTEM_PROMPT = (
     "你是一个智能助手，可以回答用户的问题。\n"
     "当用户的问题需要查阅文档知识库时，请调用 retrieve 工具检索相关文档。\n"
-    "对于日常问候、闲聊或你已知的通用知识，请直接回答，无需检索。"
+    "对于日常问候、闲聊或你已知的通用知识，请直接回答，无需检索。\n"
+    "可参考的文档有: \n{file_names}\n"
 )
 
 GENERATE_TITLE_PROMPT = (
@@ -164,7 +165,8 @@ class Graph:
 
         # 系统提示词（含历史摘要）
         summary = state.get("summary", "")
-        system_content = DECIDE_SYSTEM_PROMPT
+        current_file_names = HybridPDRetrieverFactory.get_instance().get_file_names()
+        system_content = DECIDE_SYSTEM_PROMPT.format(file_names=current_file_names)
         if summary:
             system_content += f"\n\n以下是之前对话的摘要，请参考:\n{summary}"
         system_messages = [SystemMessage(content=system_content)]
