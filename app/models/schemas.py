@@ -1,8 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Literal
 
-from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import String, Integer, DateTime, JSON, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 

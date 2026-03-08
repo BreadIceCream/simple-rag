@@ -11,7 +11,7 @@ For more detailed information, please view the `docs` directory.
   - 🧠 **Agentic Reflexive Graph Workflow**: Built on LangGraph, featuring a cognitive state machine for self-reflection, hallucination checking, usefulness evaluation, and question rewriting (Thinking-Rewriting loop).
   - 🔄 **Hybrid Retrieval & RRF Fusion**: Combines BM25 sparse keyword retrieval with embedding-based dense semantic search, united by Reciprocal Rank Fusion (RRF).
   - 🍱 **Intelligent Hierarchical Chunking**: Utilizes the Parent Document Retriever pattern with language/format-aware splitters (Markdown/HTML headers, Code splitters).
-  - 🎯 **Advanced Re-ranking Optimization**: Seamless integration with Qwen Native Reranker and other lightweight compressors for deep semantic abstract re-ranking.
+  - 🎯 **Advanced Re-ranking Optimization**: Seamless integration with Qwen Reranker and other lightweight compressors for deep semantic abstract re-ranking.
   - 🌐 **Multi-modal Document Ingestion**: Cascading parsers for local files (PDF, HTML, Markdown, Code) and remote Web URLs.
   - ⚡ **High-Performance Backend**: FastAPI powered asynchronous architecture, backed by async SQLAlchemy and psycopg connection pooling.
   - 📡 **Real-time SSE Streaming**: Delivers token-by-token streaming responses with intelligent error recovery and LangGraph Checkpoint state persistence.

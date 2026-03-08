@@ -14,7 +14,6 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette import status
 
 from app.config.db_config import DatabaseManager
 from app.core.graph import Graph
