@@ -1,11 +1,14 @@
+from datetime import datetime
 import os
 import time
 from abc import abstractmethod, ABC
 from pathlib import Path
 
-from langchain_community.document_loaders import PyPDFLoader, BSHTMLLoader, WebBaseLoader
+import trafilatura
+from langchain_community.document_loaders import PyMuPDFLoader, WebBaseLoader, BSHTMLLoader
 from langchain_community.document_loaders.parsers import RapidOCRBlobParser
 from langchain_core.documents import Document
+from langchain_docling import DoclingLoader
 
 from app.config.global_config import global_config
 from app.core.chunking import EXT_TO_LANGUAGE
@@ -16,7 +19,8 @@ from app.models.common import LoadDocToVectorStoreResult
 TEXT_EXTENSIONS = set(EXT_TO_LANGUAGE.keys()) | {".md", ".txt"}
 PDF_EXTENSION = {".pdf"}
 HTML_EXTENSIONS = {".html", ".htm"}
-SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSION | HTML_EXTENSIONS
+MS_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSION | HTML_EXTENSIONS | MS_OFFICE_EXTENSIONS
 
 
 def _get_file_extension(file_path: str) -> str:
@@ -64,13 +68,13 @@ class DocumentLoader(ABC):
         """
 
     @abstractmethod
-    def do_load(self, path: str, file_type: str, is_url: bool = False) -> list[Document]:
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
         """
         执行文档加载，返回 Document 列表。
         :param path: 文件路径或 URL
         :param file_type: 文件后缀（如 '.pdf', '.md'）
         :param is_url: 是否为 URL
-        :return: 加载后的 Document 列表
+        :return: tuple[list[Document], str], 加载后的 Document 列表，加载后的Document文件类型（可能提取后变为其他格式，如 .pdf -> .md）
         """
 
     def _add_metadata(self, path: str, file_type: str, is_url: bool, docs: list[Document]) -> list[Document]:
@@ -108,7 +112,7 @@ class DocumentLoader(ABC):
 
 class PDFLoader(DocumentLoader):
     """
-    PDF 文件加载器，使用 PyPDFLoader 加载 PDF.
+    PDF 文件加载器，使用 PyMUPDF 加载 PDF，支持图片、表格提取。
     """
 
     def __init__(self, order: int = 10):
@@ -117,18 +121,93 @@ class PDFLoader(DocumentLoader):
     def supports(self, file_type: str, is_url: bool = False) -> bool:
         return not is_url and file_type in self.supported_file_types  # PDFLoader 不处理 URL
 
-    def do_load(self, path: str, file_type: str, is_url: bool = False) -> list[Document]:
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
         try:
-            loader = PyPDFLoader(
+            loader = PyMuPDFLoader(
                 file_path=path,
                 mode="page",  # 按页加载，每页一个 Document
                 images_inner_format="markdown-img",
-                images_parser=RapidOCRBlobParser()  # 使用 rapidOCR 提取图片
+                images_parser=RapidOCRBlobParser(),  # 使用 rapidOCR 提取图片
+                extract_tables="markdown",
             )
             docs = loader.load()
-            return self._add_metadata(path, file_type, is_url, docs)
+            return self._add_metadata(path, file_type, is_url, docs), file_type
         except Exception as e:
             raise RuntimeError(f"PDFLoader failed to load '{path}': {e}")
+
+    def _add_metadata(self, path: str, file_type: str, is_url: bool, docs: list[Document]) -> list[Document]:
+        return super()._add_metadata(path, file_type, is_url, docs)
+
+
+
+class DoclingDocumentLoader(DocumentLoader):
+    """
+    DoclingDocumentLoader 文件加载器，使用 docling 加载 pdf、word、excel、ppt.
+    """
+    def __init__(self, order: int = 10):
+        super().__init__(MS_OFFICE_EXTENSIONS, order)
+
+    def supports(self, file_type: str, is_url: bool = False) -> bool:
+        return not is_url and file_type in self.supported_file_types  # DoclingDocumentLoader 不处理 URL
+
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
+        try:
+            loader = DoclingLoader(file_path=path)
+            docs = loader.load()
+            return self._add_metadata(path, file_type, is_url, docs), file_type
+        except Exception as e:
+            raise RuntimeError(f"DoclingDocumentLoader failed to load '{path}': {e}")
+
+    def _add_metadata(self, path: str, file_type: str, is_url: bool, docs: list[Document]) -> list[Document]:
+        return super()._add_metadata(path, file_type, is_url, docs)
+
+
+class TrafilaturaLoader(DocumentLoader):
+    """
+    TrafilaturaLoader 文件加载器，支持提取HTML格式的内容。
+    使用 Trafilatura 提取正文内容，支持 URL 和本地 HTML 文件两种模式。
+    返回一个Document对象的列表
+    """
+    def __init__(self, order: int = 10):
+        super().__init__(HTML_EXTENSIONS, order)
+
+    def supports(self, file_type: str, is_url: bool = False) -> bool:
+        # 可处理 HTML 文件和 URL，但仅限于 HTML 类型
+        return file_type in self.supported_file_types
+
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
+        try:
+            content = None
+            if is_url:
+                content = trafilatura.fetch_url(path)
+            else:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            if not content:
+                raise ValueError(f"Failed to get html content from '{path}'")
+            result_str = trafilatura.extract(
+                content,
+                url=path if is_url else None,
+                include_comments=True,
+                include_tables=True,
+                include_links=True,
+                output_format="html",
+            )
+            if not result_str:
+                raise ValueError(f"Trafilatura failed to extract content from '{path}'")
+            metadata = trafilatura.extract_metadata(
+                content,
+                path if is_url else None,
+                date_config={
+                    "original_date": True,
+                    "outputformat": "%Y-%m-%dT%H:%M:%S",
+                    "max_date": datetime.now().strftime("%Y-%m-%d"),
+                }
+            )
+            doc = Document(page_content=result_str, metadata={k: v for k, v in metadata.as_dict().items() if v})
+            return self._add_metadata(path, file_type, is_url, [doc]), ".html"
+        except Exception as e:
+            raise RuntimeError(f"HTMLLoader failed to load '{path}': {e}")
 
     def _add_metadata(self, path: str, file_type: str, is_url: bool, docs: list[Document]) -> list[Document]:
         return super()._add_metadata(path, file_type, is_url, docs)
@@ -174,7 +253,7 @@ class TextLoader(DocumentLoader):
     def supports(self, file_type: str, is_url: bool = False) -> bool:
         return not is_url and file_type in self.supported_file_types  # TextLoader 不处理 URL
 
-    def do_load(self, path: str, file_type: str, is_url: bool = False) -> list[Document]:
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -182,7 +261,7 @@ class TextLoader(DocumentLoader):
                 page_content=content,
                 metadata={"text_length": len(content)}
             )
-            return self._add_metadata(path, file_type, is_url, [doc])
+            return self._add_metadata(path, file_type, is_url, [doc]), file_type
         except Exception as e:
             raise RuntimeError(f"TextLoader failed to load '{path}': {e}")
 
@@ -214,6 +293,8 @@ class DocumentLoaderChain:
         chain = cls()
 
         # 注册内置的 DocumentLoader 子类
+        chain.register(DoclingDocumentLoader(order=10))
+        chain.register(TrafilaturaLoader(order=10))
         chain.register(PDFLoader(order=10))
         chain.register(HTMLLoader(order=10))
         chain.register(TextLoader(order=10))
@@ -238,9 +319,9 @@ class DocumentLoaderChain:
             self._loaders.sort(key=lambda l: l.order)
             self._sorted = True
 
-    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[str, list[Document]]:
+    def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[str, list[Document], str]:
         """
-        遍历注册的加载器，使用第一个支持该文件类型的加载器执行加载。
+        遍历注册的加载器，使用第一个支持该文件类型的加载器执行加载。若加载失败则尝试下一个支持的加载器，直到成功或无加载器可用。
         会添加部分元数据，默认添加
         "path", "is_url", "document_loader", "file_extension",
         "file_directory"(非URL时添加), "file_name"(非URL时添加), "last_modified"(非URL时添加)。
@@ -248,16 +329,19 @@ class DocumentLoaderChain:
         :param path: 文件路径或 URL
         :param file_type: 文件后缀
         :param is_url: 是否为 URL
-        :return: (loader_name, documents)
+        :return: (loader_name, documents, new_file_type)
         :raises ValueError: 没有匹配的加载器
         """
         self._ensure_sorted()
         for loader in self._loaders:
             if loader.supports(file_type, is_url):
-                print(f"LOADER CHAIN: Selected '{loader.name}' (order={loader.order}) for file type '{file_type}'")
-                docs = loader.do_load(path, file_type, is_url)
-                print(f"LOADER CHAIN: '{loader.name}' loaded {len(docs)} documents for '{path}'")
-                return loader.name, docs
+                try:
+                    print(f"LOADER CHAIN: Trying loader '{loader.name}' (order={loader.order}) for file type '{file_type}'")
+                    docs, file_type = loader.do_load(path, file_type, is_url)
+                    print(f"LOADER CHAIN: Loader '{loader.name}' successfully loaded {len(docs)} documents for '{path}'")
+                    return loader.name, docs, file_type
+                except Exception as e:
+                    print(f"LOADER CHAIN: Loader '{loader.name}' failed to load '{path}': {e}. Trying next loader if available...")
         raise ValueError(f"No DocumentLoader supports file type: {file_type}")
 
     @property
@@ -299,7 +383,7 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
 
         # 2. 使用DocumentLoaderChain加载文档
         loader_chain = DocumentLoaderChain.get_instance()
-        loader_name, docs = loader_chain.do_load(path, file_ext, is_url)
+        loader_name, docs, file_ext = loader_chain.do_load(path, file_ext, is_url)
         if docs is None or len(docs) == 0:
             raise Exception(f"LOADING DOCUMENTS TASK: No documents loaded for <{file_id}> by loader '{loader_name}'")
         print(f"LOADING DOCUMENTS TASK: Loaded {len(docs)} documents for <{file_id}> using loader '{loader_name}'")
@@ -308,7 +392,16 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
         for doc in docs:
             doc.metadata["file_id"] = file_id
 
-        # 4. 判断是否启用父分块器，默认启用
+        # 4. 如果是url，获取url相关信息返回到上层
+        url_info = None
+        if is_url:
+            url_info = {
+                "title": docs[0].metadata.get("title"),
+                "author": docs[0].metadata.get("author"),
+                "date": docs[0].metadata.get("date"),
+            }
+
+        # 5. 判断是否启用父分块器，默认启用
         enable_parent_splitter = True
         if TextLoader.name == loader_name:
             # 纯文本文件，若长度小于阈值则不启用父分块器，整体作为一个父文档
@@ -316,11 +409,11 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
             if text_length < global_config.get("text_file_length_threshold", 1000):
                 enable_parent_splitter = False
 
-        # 5. 使用 EnhancedParentDocumentRetrieverFactory 添加文档
+        # 6. 使用 EnhancedParentDocumentRetrieverFactory 添加文档
         pd_add_docs_result = EnhancedParentDocumentRetrieverFactory.add_documents(file_type=file_ext, documents=docs,
                                                              use_parent=enable_parent_splitter, add_to_docstore=True)
 
-        # 6. 获取结果
+        # 7. 获取结果
         parent_splitter_name = pd_add_docs_result.parent_splitter_name
         parent_doc_ids = pd_add_docs_result.parent_doc_ids
         children_count = pd_add_docs_result.children_count
@@ -332,7 +425,8 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
             f"Loader: {loader_name}. Parent Splitter: {parent_splitter_name}, "
             f"Parent Doc count {len(parent_doc_ids)}. Children Doc count {children_count}. "
             f"Cost: {cost:.2f}s")
-        return LoadDocToVectorStoreResult(file_id, None, loader_name, parent_splitter_name, parent_doc_ids,
-                                          children_count, cost)
+        return LoadDocToVectorStoreResult(file_id, None, loader_name,
+                                          parent_splitter_name, parent_doc_ids,
+                                          children_count, cost, url_info)
     except Exception as e:
         return LoadDocToVectorStoreResult.error(file_id, e)

@@ -25,6 +25,7 @@ class LoadDocToVectorStoreResult:
         - parent_doc_ids: 父文档 ID 列表，如果没有则为 None
         - children_count: 生成的子文档数量，如果没有则为 None
         - cost: 耗时(s)，如果没有则为 None
+        - url_info: URL 相关信息字典，如果文件是 URL 则包含 URL 相关信息，否则为 None
     """
 
     def __init__(self,
@@ -35,6 +36,7 @@ class LoadDocToVectorStoreResult:
         parent_doc_ids: list[str] | None = None,
         children_count: int | None = None,
         cost: float | None = None,
+        url_info: dict | None = None
     ):
         self.file_id = file_id
         self.error = error
@@ -42,7 +44,8 @@ class LoadDocToVectorStoreResult:
         self.parent_splitter = parent_splitter
         self.parent_doc_ids = parent_doc_ids
         self.children_count = children_count
-        self.cost = cost
+        self.cost = cost,
+        self.url_info = url_info
 
     @classmethod
     def error(cls, file_id: str, error: Exception):

@@ -84,8 +84,8 @@ async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentD
         }
         if is_url:
             file_dir = None
-            file_name = None
-            last_modified = None
+            file_name = load_result.url_info.get("title")
+            last_modified = load_result.url_info.get("date")
             file_ext = ".html"
             mime_type = "text/html"
         else:
