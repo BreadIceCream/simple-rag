@@ -6,7 +6,6 @@ chunking模块。配置和注册不同类型文件的 TextSplitter
 - SplitterEntry / SplitterRegistry: 按文件类型选择最优先的 parent TextSplitter
 """
 
-import os
 from typing import Any
 
 from langchain_core.documents import Document
@@ -63,11 +62,91 @@ class TextSplitterMetadataMixin:
         original_metadata[TEXT_SPLITTERS_METADATA_KEY] = text_splitters
         return original_metadata
 
+    def merge_splits_by_structure(self, docs: list[Document], chunk_size: int, separator: str = "\n\n") -> list[Document]:
+        """
+        结构化相邻合并策略（Bottom-up Merge）：
+        从底层到顶层结构合并：优先合并共享完全一致的标题结构的相邻块，当无法合并时再尝试合并上一级结构。
+        """
+        import re
+        if not docs:
+            return []
+        
+        docs = docs.copy()
+
+        def _get_header_hierarchy(metadata: dict) -> list[tuple[int, str, str]]:
+            # 从 metadata 中提取标题层级信息，返回列表 [(level, key, value), ...]（如 (1, header 1, Install)，按层级升序排序
+            headers = []
+            for k, v in metadata.items():
+                match = re.search(r'\d+', k)
+                if match and ('header' in k.lower() or 'h' in k.lower()):
+                    level = int(match.group())
+                    headers.append((level, k, str(v)))
+            headers.sort(key=lambda x: x[0])
+            return headers
+
+        def _get_common_depth(m1: dict, m2: dict) -> int:
+            h1 = _get_header_hierarchy(m1)
+            h2 = _get_header_hierarchy(m2)
+            depth = 0
+            for (lvl1, k1, v1), (lvl2, k2, v2) in zip(h1, h2):
+                if lvl1 == lvl2 and k1 == k2 and v1 == v2:
+                    depth += 1
+                else:
+                    break
+            return depth
+
+        while len(docs) > 1:
+            best_pair_idx = -1
+            max_depth = -1
+            
+            for i in range(len(docs) - 1):
+                doc1, doc2 = docs[i], docs[i+1]
+                combined_len = len(doc1.page_content) + len(separator) + len(doc2.page_content)
+                if combined_len <= chunk_size:
+                    depth = _get_common_depth(doc1.metadata, doc2.metadata)
+                    if depth > max_depth:
+                        max_depth = depth
+                        best_pair_idx = i
+                        
+            if best_pair_idx != -1:
+                # 找到最匹配的相邻两块，进行合并
+                doc1 = docs[best_pair_idx]
+                doc2 = docs.pop(best_pair_idx + 1)
+                
+                h1 = _get_header_hierarchy(doc1.metadata)
+                h2 = _get_header_hierarchy(doc2.metadata)
+                common_headers = {}
+                for (lvl1, k1, v1), (lvl2, k2, v2) in zip(h1, h2):
+                    if lvl1 == lvl2 and k1 == k2 and v1 == v2:
+                        common_headers[k1] = v1
+                    else:
+                        break
+                        
+                merged_metadata = {}
+                for k, v in doc1.metadata.items():
+                    if k not in common_headers and not ('header' in k.lower() or 'h' in k.lower()):
+                        if k in doc2.metadata and doc2.metadata[k] == v:
+                            merged_metadata[k] = v
+                merged_metadata.update(common_headers)
+                
+                if TEXT_SPLITTERS_METADATA_KEY in doc1.metadata:
+                     merged_metadata[TEXT_SPLITTERS_METADATA_KEY] = doc1.metadata[TEXT_SPLITTERS_METADATA_KEY]
+                     
+                docs[best_pair_idx] = Document(
+                    page_content=doc1.page_content + separator + doc2.page_content,
+                    metadata=merged_metadata
+                )
+            else:
+                break
+                
+        return docs
+
 
 # ======================== TextSplitter 适配器 ========================
 class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
     """
     Markdown 分割适配器：TextSplitter 子类，内部委托 MarkdownHeaderTextSplitter。
+    先按照结构切分（不会考虑chunk_size和chunk_overlap），切分后对小块进行合并，最后再调用内部 RecursiveCharacterTextSplitter 对大块进行切分。
 
     MarkdownHeaderTextSplitter.split_text() 返回 list[Document]（含标题层级元数据），
     而 TextSplitter 的标准接口 split_text() 要求返回 list[str]。
@@ -80,13 +159,20 @@ class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
     def __init__(self,
                  headers_to_split_on: list[tuple[str, str]] | None = None,
                  strip_headers: bool = False,
+                 chunk_size: int = 1000,
+                 chunk_overlap: int = 200,
                  **kwargs):
         super().__init__(**kwargs)
+        self.chunk_size = chunk_size
         self._md_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=headers_to_split_on or [
                 ("#", "Header 1"), ("##", "Header 2"),
             ],
             strip_headers=strip_headers,
+        )
+        self._recursive_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
     def split_text(self, text: str) -> list[str]:
@@ -95,7 +181,9 @@ class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
         无元数据保留。
         """
         docs = self._md_splitter.split_text(text)
-        return [doc.page_content for doc in docs]
+        merged_docs = self.merge_splits_by_structure(docs, self.chunk_size)
+        final_docs = self._recursive_splitter.split_documents(merged_docs)
+        return [doc.page_content for doc in final_docs]
 
     def split_documents(self, documents: list[Document]) -> list[Document]:
         """
@@ -109,7 +197,11 @@ class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
                 # 合并父文档的 metadata + 切分产生的标题层级 metadata
                 merged_metadata = {**doc.metadata, **sub_doc.metadata}
                 merged_metadata = self.add_metadata(merged_metadata)
-                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+                sub_doc.metadata = merged_metadata
+            
+            merged_docs = self.merge_splits_by_structure(sub_docs, self.chunk_size)
+            final_docs = self._recursive_splitter.split_documents(merged_docs)
+            result.extend(final_docs)
         return result
 
     def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Document]:
@@ -121,7 +213,11 @@ class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
             for sub_doc in sub_docs:
                 merged_metadata = {**metadata, **sub_doc.metadata}
                 merged_metadata = self.add_metadata(merged_metadata)
-                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+                sub_doc.metadata = merged_metadata
+                
+            merged_docs = self.merge_splits_by_structure(sub_docs, self.chunk_size)
+            final_docs = self._recursive_splitter.split_documents(merged_docs)
+            result.extend(final_docs)
         return result
 
 
@@ -130,56 +226,55 @@ class MarkdownTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
 class HTMLTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
     """
     HTML 分割适配器：TextSplitter 子类，内部委托 HTMLHeaderTextSplitter。
+    先按照结构切分（不会考虑chunk_size和chunk_overlap），切分后对小块进行合并，最后再调用内部 RecursiveCharacterTextSplitter 对大块进行切分。
+    
+    HTMLHeaderTextSplitter 有三种切分方式：
+    split_text(html_str)、split_text_from_url(url)、split_text_from_file(file_path)。
 
-    HTMLHeaderTextSplitter 有三种切分方式：split_text(html_str)、split_text_from_url(url)、
-    split_text_from_file(file_path)。
-
-    在 ParentDocumentRetriever 流程中，传入的 Document 的 page_content 可能是：
-    1. HTML 文本内容
-    2. 文件路径
-    3. URL
-    本适配器在 split_documents 中根据 page_content 的内容自动选择合适的切分方式。
+    在 ParentDocumentRetriever 流程中，传入的 Document 的 page_content 规定必须是：HTML 文本内容
+    经过 Document Loader 后进行处理。
     """
 
-    def __init__(self, headers_to_split_on: list[tuple[str, str]] | None = None, **kwargs):
+    def __init__(self, 
+                 headers_to_split_on: list[tuple[str, str]] | None = None, 
+                 chunk_size: int = 1000,
+                 chunk_overlap: int = 200,
+                 **kwargs):
         super().__init__(**kwargs)
+        self.chunk_size = chunk_size
         self._html_splitter = HTMLHeaderTextSplitter(
             headers_to_split_on=headers_to_split_on or [
-                ("h1", "Header 1"), ("h2", "Header 2"), ("h3", "Header 3")
+                ("h1", "Header 1"), ("h2", "Header 2"),
             ]
         )
-
-    def _split_html_content(self, content: str) -> list[Document]:
-        """
-        根据内容类型选择合适的 HTMLHeaderTextSplitter 方法进行切分。
-        :param content: HTML 文本 / 文件路径 / URL
-        :return: 切分后的 Document 列表
-        """
-        if content.startswith("http://") or content.startswith("https://"):
-            return self._html_splitter.split_text_from_url(content)
-        elif os.path.exists(content) and os.path.isfile(content):
-            return self._html_splitter.split_text_from_file(content)
-        else:
-            # 视为 HTML 文本内容
-            return self._html_splitter.split_text(content)
+        self._recursive_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
 
     def split_text(self, text: str) -> list[str]:
-        """按 HTML 标题层级切分，返回各分块的文本内容。"""
-        docs = self._split_html_content(text)
-        return [doc.page_content for doc in docs]
+        docs = self._html_splitter.split_text(text)
+        merged_docs = self.merge_splits_by_structure(docs, self.chunk_size)
+        final_docs = self._recursive_splitter.split_documents(merged_docs)
+        return [doc.page_content for doc in final_docs]
 
     def split_documents(self, documents: list[Document]) -> list[Document]:
         """
         按 HTML 标题层级切分 Document 列表。
         保留原始 Document 的 metadata，并合并 HTMLHeaderTextSplitter 产生的标题层级元数据。
+        :param documents: 待切分的 Document 列表 (Document Loader加载)，每个 Document 的 page_content 应为 HTML 文本内容
         """
         result = []
         for doc in documents:
-            sub_docs = self._split_html_content(doc.page_content)
+            sub_docs = self._html_splitter.split_text(doc.page_content)
             for sub_doc in sub_docs:
                 merged_metadata = {**doc.metadata, **sub_doc.metadata}
                 merged_metadata = self.add_metadata(merged_metadata)
-                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+                sub_doc.metadata = merged_metadata
+                
+            merged_docs = self.merge_splits_by_structure(sub_docs, self.chunk_size)
+            final_docs = self._recursive_splitter.split_documents(merged_docs)
+            result.extend(final_docs)
         return result
 
     def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Document]:
@@ -187,11 +282,15 @@ class HTMLTextSplitterAdapter(TextSplitterMetadataMixin, TextSplitter):
         result = []
         _metadatas = metadatas or [{}] * len(texts)
         for text, metadata in zip(texts, _metadatas):
-            sub_docs = self._split_html_content(text)
+            sub_docs = self._html_splitter.split_text(text)
             for sub_doc in sub_docs:
                 merged_metadata = {**metadata, **sub_doc.metadata}
                 merged_metadata = self.add_metadata(merged_metadata)
-                result.append(Document(page_content=sub_doc.page_content, metadata=merged_metadata))
+                sub_doc.metadata = merged_metadata
+                
+            merged_docs = self.merge_splits_by_structure(sub_docs, self.chunk_size)
+            final_docs = self._recursive_splitter.split_documents(merged_docs)
+            result.extend(final_docs)
         return result
 
 
@@ -316,7 +415,11 @@ class SplitterRegistry:
         registry = cls()
 
         # 1. Markdown 分块器（order=10，优先于通用分块器）
-        md_splitter = MarkdownTextSplitterAdapter(strip_headers=False)
+        md_splitter = MarkdownTextSplitterAdapter(
+            strip_headers=False,
+            chunk_size=parent_chunk_size,
+            chunk_overlap=parent_chunk_overlap
+        )
         registry.register(SplitterEntry(
             text_splitter=md_splitter,
             supported_file_types={".md"},
@@ -324,7 +427,10 @@ class SplitterRegistry:
         )
 
         # 2. HTML 分块器（order=10）
-        html_splitter = HTMLTextSplitterAdapter()
+        html_splitter = HTMLTextSplitterAdapter(
+            chunk_size=parent_chunk_size,
+            chunk_overlap=parent_chunk_overlap
+        )
         registry.register(SplitterEntry(
             text_splitter=html_splitter,
             supported_file_types={".html", ".htm"},

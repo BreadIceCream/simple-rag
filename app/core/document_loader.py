@@ -1,12 +1,17 @@
-from datetime import datetime
 import os
 import time
 from abc import abstractmethod, ABC
+from datetime import datetime
 from pathlib import Path
 
 import trafilatura
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions, ConvertPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption, WordFormatOption, ExcelFormatOption, \
+    PowerpointFormatOption
 from langchain_community.document_loaders import PyMuPDFLoader, WebBaseLoader, BSHTMLLoader
 from langchain_community.document_loaders.parsers import RapidOCRBlobParser
+from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
 from langchain_docling import DoclingLoader
 
@@ -19,7 +24,7 @@ from app.models.common import LoadDocToVectorStoreResult
 TEXT_EXTENSIONS = set(EXT_TO_LANGUAGE.keys()) | {".md", ".txt"}
 PDF_EXTENSION = {".pdf"}
 HTML_EXTENSIONS = {".html", ".htm"}
-MS_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+MS_OFFICE_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx"}
 SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSION | HTML_EXTENSIONS | MS_OFFICE_EXTENSIONS
 
 
@@ -152,14 +157,25 @@ class DoclingDocumentLoader(DocumentLoader):
 
     def do_load(self, path: str, file_type: str, is_url: bool = False) -> tuple[list[Document], str]:
         try:
-            loader = DoclingLoader(file_path=path)
+            converter = DocumentConverter(
+                allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX,InputFormat.PPTX],
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=PdfPipelineOptions(allow_external_plugins=True, ocr_options=RapidOcrOptions(), do_table_structure=True)),
+                    InputFormat.DOCX: WordFormatOption(pipeline_options=ConvertPipelineOptions(allow_external_plugins=True)),
+                    InputFormat.XLSX: ExcelFormatOption(pipeline_options=ConvertPipelineOptions(allow_external_plugins=True)),
+                    InputFormat.PPTX: PowerpointFormatOption(pipeline_options=ConvertPipelineOptions(allow_external_plugins=True)),
+                }
+            )
+            loader = DoclingLoader(file_path=path, converter=converter)
             docs = loader.load()
             return self._add_metadata(path, file_type, is_url, docs), file_type
         except Exception as e:
             raise RuntimeError(f"DoclingDocumentLoader failed to load '{path}': {e}")
 
     def _add_metadata(self, path: str, file_type: str, is_url: bool, docs: list[Document]) -> list[Document]:
-        return super()._add_metadata(path, file_type, is_url, docs)
+        # Docling需要过滤复杂的metadata，避免过大或不必要的字段影响后续处理
+        filtered_docs = filter_complex_metadata(docs)
+        return super()._add_metadata(path, file_type, is_url, filtered_docs)
 
 
 class TrafilaturaLoader(DocumentLoader):
@@ -293,7 +309,8 @@ class DocumentLoaderChain:
         chain = cls()
 
         # 注册内置的 DocumentLoader 子类
-        chain.register(DoclingDocumentLoader(order=10))
+        import torch
+        chain.register(DoclingDocumentLoader(order=10 if torch.cuda.is_available() else 20))  # GPU环境优先使用Docling加载Office文件，CPU环境放后面避免性能问题
         chain.register(TrafilaturaLoader(order=10))
         chain.register(PDFLoader(order=10))
         chain.register(HTMLLoader(order=10))
