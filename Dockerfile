@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制项目文件
-COPY . .
-
 # 下载 NLTK 数据
 RUN python -c "import nltk; nltk.download('punkt_tab'); nltk.download('stopwords'); nltk.download('wordnet')"
+
+# 复制项目文件
+COPY . .
 
 EXPOSE 8000
 
