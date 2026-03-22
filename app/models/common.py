@@ -95,6 +95,7 @@ class EmbeddedDocumentVO(BaseModel):
     file_directory: str | None = Field(None, description="文件目录,仅本地文件使用")
     file_name: str | None = Field(None, description="文件名")
     file_extension: str = Field(..., description="文件后缀名(如 .pdf)")
+    file_summary: str | None = Field(None, description="文件内容摘要")
     mime_type: str | None = Field(None, description="文件mime类型")
     last_modified: datetime | None = Field(None, description="文件最后修改时间,仅本地文件使用")
 

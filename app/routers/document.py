@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Body
 from fastapi.params import Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,16 +49,20 @@ async def get_parent_chunks(
 
 
 @router.post("/local")
-async def upload_local_document(file_path: str, db: AsyncSession = Depends(DatabaseManager.get_db),
+async def upload_local_document(file_path: str = Body(..., embed=True, alias="filePath", description="文件路径"),
+                                summary: str = Body(None, embed=True, alias="summary", description="文件内容摘要"),
+                                db: AsyncSession = Depends(
+                                    DatabaseManager.get_db),
                                 pd_retriever: EnhancedParentDocumentRetriever = Depends(EnhancedParentDocumentRetrieverFactory.get_instance)):
     """
     上传文档，分块并入库
+    :param summary:
     :param file_path: 文件路径
     :param db:
     :param pd_retriever:
     :return:
     """
-    result = await document.upload_document(file_path, False, pd_retriever, db)
+    result = await document.upload_document(file_path, summary, False, pd_retriever, db)
     if result == 0:
         return Result(code=200, message="文档上传成功", data=None)
     else:
@@ -66,16 +70,19 @@ async def upload_local_document(file_path: str, db: AsyncSession = Depends(Datab
 
 
 @router.post("/url")
-async def upload_url_document(url: str, db: AsyncSession = Depends(DatabaseManager.get_db),
+async def upload_url_document(url: str = Body(..., embed=True, description="url路径"),
+                              summary: str = Body(None, embed=True, description="内容摘要"),
+                              db: AsyncSession = Depends(DatabaseManager.get_db),
                               pd_retriever: EnhancedParentDocumentRetriever = Depends(EnhancedParentDocumentRetrieverFactory.get_instance)):
     """
     读取网页，分块并入库
+    :param summary:
     :param url: 网页 URL
     :param db:
     :param pd_retriever:
     :return:
     """
-    result = await document.upload_document(url, True, pd_retriever, db)
+    result = await document.upload_document(url, summary, True, pd_retriever, db)
     if result == 0:
         return Result(code=200, message="文档上传成功", data=None)
     else:

@@ -14,9 +14,9 @@ class GraphState(MessagesState):
     MessagesState 自动管理 messages: Annotated[list[AnyMessage], add_messages]
     """
     original_message: str                       # 本次对话用户的原始输入（不随 rewrite 改变）
-    documents: list[Document]                   # 检索到的文档列表（覆盖）
-    rewrite_count: int                          # 问题重写计数（防 rewrite 无限循环）
-    generate_count: int                       # 回答生成计数（防 hallucination 无限循环）
+    documents: list[Document]                   # 检索到的文档列表（覆盖，每轮对话需要重置）
+    rewrite_count: int                          # 问题重写计数（防 rewrite 无限循环，每轮对话需要重置）
+    generate_count: int                         # 回答生成计数（防 hallucination 无限循环，每轮对话需要重置）
     summary: str                                # 历史对话摘要（summarize messages 使用）
 
 

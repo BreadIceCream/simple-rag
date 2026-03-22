@@ -19,6 +19,7 @@ class EmbeddedDocument(Base):
     file_extension: Mapped[str] = mapped_column(String(128), nullable=False, comment="后缀名(如 .pdf, .html)")
     mime_type: Mapped[str] = mapped_column(String(128), nullable=True, comment="文件mime类型")
     last_modified: Mapped[str] = mapped_column(String(64), nullable=True, comment="文件最后修改时间,仅本地文件使用")
+    file_summary: Mapped[str] = mapped_column(Text, nullable=True, comment="文件内容摘要")
     parent_doc_ids: Mapped[list[str]] = mapped_column(JSON, default=list, comment="父文档的 ID 列表")
     children_count: Mapped[int] = mapped_column(Integer, default=0, comment="子文档数量")
     load_metadata: Mapped[dict] = mapped_column(JSON, default=dict, comment="加载文档时的元信息，如使用的嵌入模型、加载器、分块器等")

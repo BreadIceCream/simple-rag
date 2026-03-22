@@ -17,21 +17,26 @@ async def set_reference_documents(doc_ids: list[str] | None, db: AsyncSession | 
     """
     if not doc_ids:
         # 如果传入空列表，表示清空参考文档
-        return hybrid_retriever.reset_file_ids(set(), set(), None)
+        return hybrid_retriever.reset_file_ids(set(), [{}], None)
     # 1. 获取所有文档的子文档列表
     all_docs = await get_document_by_ids(doc_ids, db)
     all_child_docs = []
     valid_doc_ids = []
-    valid_doc_names = []
+    valid_doc_infos = []
     for a_doc in all_docs:
         valid_doc_ids.append(a_doc.id)
-        valid_doc_names.append(a_doc.file_name if a_doc.file_name else a_doc.path)
+        a_doc_info = {
+            "file_id" : a_doc.id,
+            "file_name" : a_doc.file_name if a_doc.file_name else a_doc.path,
+            "file_summary": a_doc.file_summary
+        }
+        valid_doc_infos.append(a_doc_info)
         parent_ids = a_doc.parent_doc_ids
         for parent_id in parent_ids:
             child_docs = pd_retriever.get_child_docs(parent_id)
             all_child_docs.extend(child_docs)
     # 2. 传入HybridPDRetriever进行设置
-    return hybrid_retriever.reset_file_ids(set(valid_doc_ids), set(valid_doc_names), all_child_docs)
+    return hybrid_retriever.reset_file_ids(set(valid_doc_ids), valid_doc_infos, all_child_docs)
 
 
 async def get_reference_documents(db: AsyncSession, hybrid_retriever: HybridPDRetriever):

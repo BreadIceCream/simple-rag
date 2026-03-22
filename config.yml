@@ -38,7 +38,7 @@ retriever:
 chat:
   max_rewrite_time: 2
   max_generate_time: 3
-  message_summarize_threshold: 10
+  conversation_summarize_threshold: 10
 
 # 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter
 text_file_length_threshold: 1500

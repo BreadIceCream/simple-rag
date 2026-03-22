@@ -28,6 +28,7 @@
 - `file_directory` (str|null): 源文件所在目录
 - `file_name` (str|null): 源文件名称
 - `file_extension` (str): 文件后缀名（如 `.pdf`）
+- `file_summary` (str|null): 文件内容摘要
 - `mime_type` (str|null): MIME 类型
 - `last_modified` (datetime|null): 文件最后修改时间
 
@@ -42,6 +43,7 @@
 - `file_extension` (str): 后缀名(如 .pdf, .html)
 - `mime_type` (str|null): 文件mime类型
 - `last_modified` (str|null): 文件最后修改时间, 仅本地文件使用
+- `file_summary` (str|null): 文件内容摘要
 - `parent_doc_ids` (list[str]): 父文档的 ID 列表
 - `children_count` (int): 子文档数量
 - `load_metadata` (dict): 加载文档时的元信息，如使用的嵌入模型、加载器、分块器等
@@ -165,14 +167,24 @@
 
 #### 2.3 上传本地文档
 - **POST** `/api/documents/local`
-- **请求参数 (Query)**:
-  - `file_path` (str): 必填，本地绝对/相对文件路径
+- **请求体 (Body)**:
+  ```json
+  {
+      "filePath": "/path/to/file.pdf",  // 必填，本地绝对/相对文件路径
+      "summary": "文件内容摘要"           // 选填，文件内容摘要
+  }
+  ```
 - **响应体数据域 (`data`)**: `null` （如发生错误直接抛出普通异常中断）
 
 #### 2.4 上传网络 URL
 - **POST** `/api/documents/url`
-- **请求参数 (Query)**:
-  - `url` (str): 必填，希望读取并嵌入的网页 URL
+- **请求体 (Body)**:
+  ```json
+  {
+      "url": "https://example.com/page",  // 必填，希望读取并嵌入的网页 URL
+      "summary": "内容摘要"                // 选填，内容摘要
+  }
+  ```
 - **响应体数据域 (`data`)**: `null`
 
 #### 2.5 获取文档详情信息 

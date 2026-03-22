@@ -517,9 +517,9 @@ class HybridPDRetriever(EnsembleRetriever):
         """获取当前使用的文件ID集合"""
         return self._file_ids
 
-    def get_file_names(self) -> set[str]:
+    def get_file_infos(self) -> list[dict]:
         """获取当前使用的文件名称集合"""
-        return self._file_names
+        return self._file_infos
 
     def _get_bm25_retriever(self) -> BM25Retriever:
         if self._bm25_retriever is None:
@@ -581,19 +581,19 @@ class HybridPDRetriever(EnsembleRetriever):
         return params
 
 
-    def reset_file_ids(self, file_ids: set[str], file_names: set[str], child_docs: list[Document] | None = None) -> int:
+    def reset_file_ids(self, file_ids: set[str], file_infos: list[dict], child_docs: list[Document] | None = None) -> int:
         """
         重置已选择的文件ID集合，并创建对应的BM25Retriever实例（使用child文档，BM25Plus变体），
         重新设置search_kwargs以使用新的child文档集合进行检索。
         如果file_ids为空，则重置两个Retriever为None
-        :param file_names: 文档名称集合，用于大模型参考
+        :param file_infos: 文档信息集合，用于大模型参考
         :param file_ids: 数据库中的文档ID列表
         :param child_docs: 可选，file_ids对应的child文档列表.
         :return: 0表示成功
         """
         self._file_ids = file_ids
         if not file_ids:
-            self._file_names = set()
+            self._file_infos = [{}]
             self._bm25_retriever = None
             self._pd_retriever = None
             self._retrieval_params = None
@@ -607,7 +607,7 @@ class HybridPDRetriever(EnsembleRetriever):
             raise ValueError("HYBRID PD RETRIEVER: child_docs must be provided when file_ids is not empty.")
 
         # 设置文档名称集合
-        self._file_names = file_names
+        self._file_infos = file_infos
 
         # 创建BM25Retriever实例，使用BM25Plus
         self._bm25_retriever = BM25Retriever.from_documents(
@@ -743,7 +743,7 @@ class HybridPDRetrieverFactory:
         )
         # 初始化实例级别属性（Pydantic model 不通过 __init__ 设置非 field 属性）
         cls._instance._file_ids = set()
-        cls._instance._file_names = set()
+        cls._instance._file_infos = [{}]
         cls._instance._bm25_retriever = None
         cls._instance._pd_retriever = None
         cls._instance._retrieval_params = None

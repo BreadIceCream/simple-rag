@@ -3,7 +3,8 @@ LangGraph 对话流程 — Agentic RAG 反思式生成。
 
 流程:
   START → summarize_conversation → decide_retrieve_or_respond
-    → (有 tool_calls) → retrieve_node → grade_documents
+    → (有 tool_calls) → retrieve_node → handle_retrieve_result
+        → (检索异常) → decide_retrieve_or_respond
         → (相关) → generate_answer → check_hallucination
             → (无幻觉) → check_usefulness
                 → (已解决) → END
@@ -22,14 +23,17 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, RemoveMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
 from langgraph.config import get_stream_writer
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import tools_condition
+from langgraph.prebuilt import tools_condition, ToolRuntime, ToolNode
+from langgraph.types import Command
+from psycopg_pool import ConnectionPool
+from pydantic import BaseModel, Field
 
-from app.core.retriever import HybridPDRetrieverFactory
+from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
+from app.core.retriever import HybridPDRetrieverFactory, EnhancedParentDocumentRetrieverFactory
 from app.models.state import GraphState, GradeDocuments, HallucinationCheck, UsefulnessCheck
 
 # ======================== 元数据过滤 ========================
@@ -53,15 +57,17 @@ def _serialize_docs(docs: list) -> str:
     )
 
 
+# ======================== Tool Schema 定义 ========================
+
+
+class GetDocsPageInput(BaseModel):
+    file_id: str = Field(..., description="The ID of the file to retrieve documents for. UUID format.")
+    offset: int = Field(0, ge=0, description="The starting position of the document list, inclusive.")
+    limit: int = Field(5, gt=0, le=10, description="The number of documents to retrieve, maximum 10.")
+
+
 # ======================== Retrieve Tool 定义 ========================
 # 仅用于 LLM bind_tools，实际执行由 Graph.retrieve_node 完成
-
-
-@tool(description="Retrieve relevant documents from the document store based on the query.")
-def retrieve(query: str) -> str:
-    """从文档库中检索相关信息以帮助回答用户问题。当用户的问题需要依据文档知识来回答时，调用此工具。"""
-    # 实际执行逻辑在 Graph.retrieve_node 中，此处不会被直接调用
-    pass
 
 
 # ======================== Prompt Templates ========================
@@ -111,9 +117,9 @@ SUMMARIZE_CONVERSATION_PROMPT = (
 
 DECIDE_SYSTEM_PROMPT = (
     "你是一个智能助手，可以回答用户的问题。\n"
-    "当用户的问题需要查阅文档知识库时，请调用 retrieve 工具检索相关文档。\n"
+    "当用户的问题需要查阅文档知识库时，请调用工具检索相关文档。\n"
     "对于日常问候、闲聊或你已知的通用知识，请直接回答，无需检索。\n"
-    "可参考的文档有: \n{file_names}\n"
+    "可参考的文档信息: \n{file_info}\n"
 )
 
 GENERATE_TITLE_PROMPT = (
@@ -121,6 +127,8 @@ GENERATE_TITLE_PROMPT = (
     "请根据以下用户消息，直接生成一个简短的对话标题（不超过20个字，不要加引号）：\n\n"
     "{message}"
 )
+
+TOOL_PLACEHOLDER = "This is a tool message and its content has been omitted."
 
 
 # ======================== Graph 类 ========================
@@ -138,7 +146,7 @@ class Graph:
     _compiled_graph: CompiledStateGraph | None = None
     _connection_pool: ConnectionPool | None = None
     _checkpointer: PostgresSaver | None = None
-    _retrieve_tool = retrieve  # 仅用于 LLM bind_tools 的 tool schema
+    _retrieve_tools: list = []  # 用于检索的tools
 
     # ---- 运行时资源（在 build() 中初始化） ----
     _response_llm = None   # 用于生成查询/回答
@@ -148,6 +156,102 @@ class Graph:
     # stream output
     _event_description = "event"  # 当前的事件描述（如“正在生成回答...”）
     _status_key = "status" # 当前的状态["progress", "finished"]
+
+    # ======================== Tools ========================
+
+    @tool("retrieve", description="Retrieve relevant documents from the document store based on the query.")
+    @staticmethod
+    def _retrieve(query: str, runtime: ToolRuntime) -> Command:
+        """从文档库中检索相关信息以帮助回答用户问题。当用户的问题需要依据文档知识来回答时，调用此工具。"""
+        all_docs = []
+
+        print(f"GRAPH: Tool retrieve: Executing retrieval for query='{query[:20]}...'")
+        runtime.stream_writer({Graph._event_description: f"Searching documentation for '{query[:20]}'...",
+                               Graph._status_key: "progress"})
+
+        # 调用 HybridPDRetriever 获取父文档列表
+        retriever = HybridPDRetrieverFactory.get_instance()
+        docs = retriever.invoke(query)
+        all_docs.extend(docs)
+
+        # 序列化为字符串作为 ToolMessage 内容
+        serialized = _serialize_docs(docs)
+
+        return Command(
+            update={
+                "messages": [ToolMessage(
+                    content=serialized,
+                    tool_call_id=runtime.tool_call_id,
+                )],
+                "documents": all_docs,
+            }
+        )
+
+    @tool("get_documents_by_file_id", description="Get the documents of the file based on the specific file_id with pagination support.", args_schema=GetDocsPageInput)
+    @staticmethod
+    def _get_docs_page(file_id: str, offset: int, limit: int, runtime: ToolRuntime) -> Command:
+        """
+        根据 file_id 分页获取文档内容。
+        校验 file_id 合法性后，从数据库获取该文件的 parent_doc_ids 列表，
+        按 offset/limit 分页取出对应的父文档内容并返回。
+        """
+        hybrid_retriever = HybridPDRetrieverFactory.get_instance()
+
+        # 校验 file_id 是否在当前参考的文件中
+        current_file_ids = hybrid_retriever.get_file_ids()
+        if file_id not in current_file_ids:
+            return Command(
+                update={
+                    "messages": [ToolMessage(
+                        content=f"Error：文件 {file_id} 不在当前参考文档范围内.",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )],
+                }
+            )
+
+        runtime.stream_writer({Graph._event_description: f"Fetching documents for file '{file_id[:8]}...'...",
+                               Graph._status_key: "progress"})
+
+        # 同步获取文档的 parent_doc_ids
+        from app.crud.document import get_document_by_id_sync
+        doc = get_document_by_id_sync(file_id)
+
+        total = len(doc.parent_doc_ids)
+        if total == 0:
+            return Command(
+                update={
+                    "messages": [ToolMessage(
+                        content=f"文件 {file_id} 没有父文档分块（parent_doc_ids 为空）。",
+                        tool_call_id=runtime.tool_call_id,
+                    )],
+                }
+            )
+
+        # 分页获取父文档
+        ids_to_search = doc.parent_doc_ids[offset: offset + limit]
+        pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
+        parent_docs_tuple = pd_retriever.get_parent_docs(ids_to_search)
+        parent_docs = [parent_doc for _, parent_doc in parent_docs_tuple]
+
+        print(f"GRAPH: Tool get_docs_page: file_id='{file_id}', total={total}, offset={offset}, limit={limit}, fetched={len(parent_docs)}")
+
+        # 序列化结果
+        if parent_docs:
+            docs_text = _serialize_docs(parent_docs)
+            content = f"文件 {file_id} 的父文档分块（共 {total} 个，当前 offset={offset}, limit={limit}）:\n\n{docs_text}"
+        else:
+            content = f"文件 {file_id} 的 offset={offset} 超出范围（共 {total} 个父文档分块）。"
+
+        return Command(
+            update={
+                "messages": [ToolMessage(
+                    content=content,
+                    tool_call_id=runtime.tool_call_id,
+                )],
+                "documents": parent_docs,
+            }
+        )
 
     # ======================== Nodes ========================
 
@@ -165,58 +269,14 @@ class Graph:
 
         # 系统提示词（含历史摘要）
         summary = state.get("summary", "")
-        current_file_names = HybridPDRetrieverFactory.get_instance().get_file_names()
-        system_content = DECIDE_SYSTEM_PROMPT.format(file_names=current_file_names)
+        current_file_infos = HybridPDRetrieverFactory.get_instance().get_file_infos()
+        system_content = DECIDE_SYSTEM_PROMPT.format(file_info=current_file_infos)
         if summary:
             system_content += f"\n\n以下是之前对话的摘要，请参考:\n{summary}"
         system_messages = [SystemMessage(content=system_content)]
 
-        response = cls._response_llm.bind_tools([cls._retrieve_tool]).invoke(system_messages + messages)
+        response = cls._response_llm.bind_tools(cls._retrieve_tools).invoke(system_messages + messages)
         return {"messages": [response]}
-
-    @classmethod
-    def retrieve_node(cls, state: GraphState):
-        """
-        自定义检索节点（替代 ToolNode）。
-        从 LLM 返回的最后一条消息中提取 tool_calls，执行检索，
-        同时将 Document 原始对象存入 state["documents"]，将序列化内容存入 ToolMessage。
-        """
-        writer = get_stream_writer()
-
-        last_message = state["messages"][-1]
-        results = []
-        all_docs = []
-
-        for tool_call in last_message.tool_calls:
-            if tool_call["name"] != cls._retrieve_tool.name:
-                print(f"GRAPH: retrieve_node: Unknown tool '{tool_call['name']}', skipping.")
-                results.append(ToolMessage(
-                    content=f"Error: Unknown tool '{tool_call['name']}'",
-                    tool_call_id=tool_call["id"],
-                ))
-                continue
-
-            query = tool_call["args"].get("query", "")
-            print(f"GRAPH: retrieve_node: Executing retrieval for query='{query[:20]}...'")
-            writer({cls._event_description: f"Searching documentation for '{query[:20]}'...",
-                    cls._status_key: "progress"})
-
-            # 调用 HybridPDRetriever 获取父文档列表
-            retriever = HybridPDRetrieverFactory.get_instance()
-            docs = retriever.invoke(query)
-            all_docs.extend(docs)
-
-            # 序列化为字符串作为 ToolMessage 内容
-            serialized = _serialize_docs(docs)
-            results.append(ToolMessage(
-                content=serialized,
-                tool_call_id=tool_call["id"],
-            ))
-
-        return {
-            "messages": results,
-            "documents": all_docs,  # 将原始 Document 对象存入 state
-        }
 
     @classmethod
     def generate_answer(cls, state: GraphState):
@@ -265,21 +325,81 @@ class Graph:
         }
 
     @classmethod
+    def init_graph_state(cls, state: GraphState):
+        """
+        初始化 state，重新设置 documents, rewrite_count, generate_count
+        :param state:
+        :return:
+        """
+        writer = get_stream_writer()
+        writer({cls._event_description: "Init graph state...", cls._status_key: "progress"})
+        return {"documents": [], "rewrite_count": 0, "generate_count": 0}
+
+    @classmethod
+    def compact_tool_messages(cls, state: GraphState):
+        """
+        替换历史轮次中的 ToolMessage 内容为占位文本。
+        每次进入该节点时都会执行，最新一轮的 ToolMessage 不替换。
+        一轮对话 = 一条 HumanMessage 及其后续所有非 HumanMessage 消息。
+        """
+        writer = get_stream_writer()
+        writer({cls._event_description: "Compact previous tool messages...", cls._status_key: "progress"})
+
+        messages = state["messages"]
+
+        # 替换历史轮次的所有 ToolMessage 内容
+        replaced_tool_messages = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.content != TOOL_PLACEHOLDER:
+                replaced_tool_messages.append(ToolMessage(
+                    content=TOOL_PLACEHOLDER,
+                    name=msg.name,
+                    tool_call_id=msg.tool_call_id,
+                    id=msg.id,
+                ))
+
+        if replaced_tool_messages:
+            return {"messages": replaced_tool_messages}
+        return {}
+
+
+    @classmethod
     def summarize_conversation(cls, state: GraphState):
         """
-        对话摘要节点: 当 messages 过多时，摘要旧消息以管理短期记忆。
-        保留最近 2 条消息，其余摘要后删除。
-        仅在 messages 数量超过 message_summarize_threshold 时执行摘要。
+        对话摘要节点: 当对话轮次超过 conversation_summarize_threshold 时，
+        摘要旧消息以管理短期记忆。保留最近 2 轮原始消息，仅压缩更早的轮次。
+        SystemMessage 不参与轮次计数和摘要。
         """
-        threshold = cls._chat_config.get("message_summarize_threshold", 10)
         messages = state["messages"]
-        if len(messages) <= threshold:
+
+        # 1. 剔除 SystemMessage，按 HumanMessage 分割对话轮次
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        rounds: list[list] = []
+        for msg in non_system_msgs:
+            if isinstance(msg, HumanMessage):
+                rounds.append([msg])
+            elif rounds:
+                rounds[-1].append(msg)
+
+        conversation_count = len(rounds)
+        threshold = cls._chat_config.get("conversation_summarize_threshold", 10)
+        if conversation_count <= threshold:
             return {}
 
         writer = get_stream_writer()
         writer({cls._event_description: "Summarizing conversation history...", cls._status_key: "progress"})
 
-        # 获取已有摘要
+        # 2. 划分：需要压缩的轮次 vs 保留的最近 2 轮
+        rounds_to_summarize = rounds[:-2]
+
+        # 3. 构建摘要输入，ToolMessage 内容替换为占位符
+        # 要 summarize 的消息和要 delete 相同
+        msgs_to_summarize = []
+        msgs_to_delete = []
+        for r in rounds_to_summarize:
+            msgs_to_summarize.extend(r)
+            msgs_to_delete.extend(r)
+
         existing_summary = state.get("summary", "")
         if existing_summary:
             summary_request = (
@@ -289,12 +409,15 @@ class Graph:
         else:
             summary_request = SUMMARIZE_CONVERSATION_PROMPT
 
-        # 让 LLM 生成摘要
-        summary_messages = messages + [HumanMessage(content=summary_request)]
-        response = cls._response_llm.invoke(summary_messages)
+        msgs_to_summarize.append(HumanMessage(content=summary_request))
+        response = cls._response_llm.invoke(msgs_to_summarize)
 
-        # 删除除最近 2 条以外的所有消息
-        delete_messages = [RemoveMessage(id=m.id) for m in messages[:-2]]
+        # 4. 删除被压缩轮次的消息
+        delete_messages = [RemoveMessage(id=m.id) for m in msgs_to_delete]
+
+        print(f"GRAPH: summarize_conversation: {conversation_count} rounds, "
+              f"summarized {len(rounds_to_summarize)} rounds, "
+              f"deleted {len(msgs_to_delete)} messages")
 
         return {
             "summary": response.content,
@@ -304,12 +427,18 @@ class Graph:
     # ======================== Conditional Edges ========================
 
     @classmethod
-    def grade_documents(cls, state: GraphState) -> Literal["generate_answer", "rewrite_question"]:
+    def handle_retrieve_result(cls, state: GraphState) -> Literal["decide_retrieve_or_respond", "generate_answer", "rewrite_question"]:
         """
-        评估检索到的文档是否与用户问题相关。
+        处理检索结果，如果检索出现异常则回到decide_retrieve_or_respond节点，否则评估检索到的文档是否与用户问题相关。
         超过最大重试次数时直接进入 generate_answer。
         """
         writer = get_stream_writer()
+
+        tool_message = state["messages"][-1]
+        if tool_message.status == "error":
+            writer({cls._event_description: "Tool execution error...", cls._status_key: "progress"})
+            return "decide_retrieve_or_respond"
+
         writer({cls._event_description: "Evaluating document relevance...", cls._status_key: "progress"})
 
         max_rewrite = cls._chat_config.get("max_rewrite_time", 3)
@@ -319,9 +448,8 @@ class Graph:
             return "generate_answer"
 
         question = state.get("original_message", state["messages"][0].content)
-        context = state["messages"][-1].content
 
-        prompt = GRADE_DOCUMENTS_PROMPT.format(question=question, context=context)
+        prompt = GRADE_DOCUMENTS_PROMPT.format(question=question, context=tool_message.content)
         response = cls._light_llm.with_structured_output(GradeDocuments).invoke(
             [HumanMessage(content=prompt)]
         )
@@ -467,6 +595,16 @@ class Graph:
         print("GRAPH: PostgresSaver checkpointer initialized.")
 
     @classmethod
+    def _init_tools(cls):
+        """
+        初始化工具列表。将所有 @tool 定义的类方法收集到 _retrieve_tools 中，
+        供 ToolNode 和 bind_tools 使用。
+        """
+        cls._retrieve_tools = [cls._retrieve, cls._get_docs_page]
+        print(f"GRAPH: Initialized {len(cls._retrieve_tools)} tools: {[t.name for t in cls._retrieve_tools]}")
+
+
+    @classmethod
     def build(cls) -> CompiledStateGraph:
         """
         构建并编译 LangGraph StateGraph。
@@ -476,7 +614,7 @@ class Graph:
         Graph 结构:
           START → summarize_conversation → decide_retrieve_or_respond
             → (tools_condition) → retrieve_node | END
-          retrieve_node → (grade_documents) → generate_answer | rewrite_question
+          retrieve_node → (handle_retrieve_result) → decide_retrieve_or_respond| generate_answer | rewrite_question
           generate_answer → (check_hallucination) → check_usefulness_node | generate_answer
           check_usefulness_node → (check_usefulness) → END | rewrite_question
           rewrite_question → decide_retrieve_or_respond
@@ -500,6 +638,9 @@ class Graph:
               f"max_generate_time={cls._chat_config.get('max_generate_time', 2)}, "
               f"message_summarize_threshold={cls._chat_config.get('message_summarize_threshold', 10)}")
 
+        # ---- 初始化 Tools ----
+        cls._init_tools()
+
         # ---- 初始化 LLM ----
         cls._init_llm()
 
@@ -511,17 +652,23 @@ class Graph:
         workflow = StateGraph(GraphState)
 
         # ---- 添加节点 ----
+        # 3个预处理节点
+        workflow.add_node("init_graph_state", cls.init_graph_state)
+        workflow.add_node("compact_tool_messages", cls.compact_tool_messages)
         workflow.add_node("summarize_conversation", cls.summarize_conversation)
+        # 5个核心节点
         workflow.add_node("decide_retrieve_or_respond", cls.decide_retrieve_or_respond)
-        workflow.add_node("retrieve", cls.retrieve_node)  # 自定义检索节点
+        workflow.add_node("retrieve", ToolNode(cls._retrieve_tools, handle_tool_errors=True))
         workflow.add_node("generate_answer", cls.generate_answer)
         workflow.add_node("rewrite_question", cls.rewrite_question)
         workflow.add_node("check_usefulness_node", cls._passthrough)
 
         # ---- 添加边 ----
 
-        # START → summarize_conversation → decide_retrieve_or_respond
-        workflow.add_edge(START, "summarize_conversation")
+        # START → init_graph_state → compact_tool_messages → summarize_conversation → decide_retrieve_or_respond
+        workflow.add_edge(START, "init_graph_state")
+        workflow.add_edge("init_graph_state", "compact_tool_messages")
+        workflow.add_edge("compact_tool_messages", "summarize_conversation")
         workflow.add_edge("summarize_conversation", "decide_retrieve_or_respond")
 
         # decide_retrieve_or_respond → (tools_condition) → retrieve 或直接回答 END
@@ -534,10 +681,10 @@ class Graph:
             },
         )
 
-        # retrieve → (grade_documents) → generate_answer 或 rewrite_question
+        # retrieve → (handle_retrieve_result) → decide_retrieve_or_respond 或 generate_answer 或 rewrite_question
         workflow.add_conditional_edges(
             "retrieve",
-            cls.grade_documents,
+            cls.handle_retrieve_result,
         )
 
         # generate_answer → (check_hallucination) → check_usefulness_node 或 generate_answer
@@ -565,6 +712,14 @@ class Graph:
         )
 
         print("GRAPH: Graph built and compiled successfully.")
+
+        # 将图绘制到项目根目录的 graph.md 中
+        from pathlib import Path
+        rag_root = Path(__file__).resolve().parent.parent.parent
+        with open(rag_root / "graph.md", "w", encoding="utf-8") as f:
+            f.write(cls._compiled_graph.get_graph().draw_mermaid())
+            print(f"GRAPH: Graph visualization saved to {rag_root / 'graph.md'}")
+
         return cls._compiled_graph
 
     @classmethod

@@ -41,6 +41,22 @@ async def get_document_by_id(doc_id: str, db: AsyncSession) -> EmbeddedDocument:
     return doc
 
 
+def get_document_by_id_sync(doc_id: str) -> EmbeddedDocument:
+    """
+    同步获取文档详情，用于线程池中的同步 Tool 调用。
+    :param doc_id: 数据库中的文档ID
+    :return: 文档详情，若不存在抛出异常
+    """
+    from app.config.db_config import DatabaseManager
+    with DatabaseManager.get_sync_db() as db:
+        stmt = select(EmbeddedDocument).where(EmbeddedDocument.id == doc_id)
+        result = db.execute(stmt)
+        doc = result.scalar_one_or_none()
+        if doc is None:
+            raise CustomException(code=status.HTTP_400_BAD_REQUEST, message="文档不存在")
+        return doc
+
+
 async def get_document_by_ids(doc_ids: list[str], db: AsyncSession) -> list[EmbeddedDocument]:
     """
     获取多个文档详情
@@ -57,10 +73,11 @@ async def get_document_by_ids(doc_ids: list[str], db: AsyncSession) -> list[Embe
     return ordered_docs
 
 
-async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
+async def upload_document(path: str, summary: str, is_url: bool, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
     """
     上传文档/读取网页，通过 ParentDocumentRetriever 分块并入库，文件信息存储在数据库中
     :param path:
+    :param summary: 文件内容摘要
     :param is_url:
     :param pd_retriever:
     :param db:
@@ -102,6 +119,7 @@ async def upload_document(path: str, is_url: bool, pd_retriever: EnhancedParentD
             file_directory=file_dir,
             file_name=file_name,
             file_extension=file_ext,
+            file_summary=summary,
             mime_type=mime_type,
             last_modified=last_modified,
             parent_doc_ids=load_result.parent_doc_ids if load_result.parent_doc_ids else [],
