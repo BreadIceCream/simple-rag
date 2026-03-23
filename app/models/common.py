@@ -15,7 +15,7 @@ class Result:
         self.data = data
 
 
-class LoadDocToVectorStoreResult:
+class LoadDocToStoreResult:
     """
     文档加载到向量数据库的结果类
         - file_id: 文件 ID
@@ -72,9 +72,10 @@ class EnhancedPDRetrieverAddDocumentsResult:
      - children_count: 添加的子文档总数
     """
 
-    def __init__(self, parent_doc_ids: list[str], children_count: int, parent_splitter_name: str | None = None):
+    def __init__(self, parent_doc_ids: list[str], children_count: int, children_docs: list[Document], parent_splitter_name: str | None = None):
         self.parent_doc_ids = parent_doc_ids
         self.children_count = children_count
+        self.children_docs = children_docs
         self.parent_splitter_name = parent_splitter_name
 
 class SetReferencesDto:

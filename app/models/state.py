@@ -13,7 +13,7 @@ class GraphState(MessagesState):
     Graph 全局状态，继承 MessagesState 以支持多轮对话。
     MessagesState 自动管理 messages: Annotated[list[AnyMessage], add_messages]
     """
-    original_message: str                       # 本次对话用户的原始输入（不随 rewrite 改变）
+    original_question: str                       # 本次对话用户的原始问题（不随 rewrite 改变）
     documents: list[Document]                   # 检索到的文档列表（覆盖，每轮对话需要重置）
     rewrite_count: int                          # 问题重写计数（防 rewrite 无限循环，每轮对话需要重置）
     generate_count: int                         # 回答生成计数（防 hallucination 无限循环，每轮对话需要重置）
@@ -22,6 +22,12 @@ class GraphState(MessagesState):
 
 
 # ======================== Structured Output Schemas ========================
+
+class SetOriginalQuestion(BaseModel):
+    """设置原始问题"""
+    binary_score: Literal["keep", "update"] = Field(
+        description="是否需要更新用户的原始问题：'keep'(保留) 或 'update'(更新)"
+    )
 
 class GradeDocuments(BaseModel):
     """检索文档相关性评分"""

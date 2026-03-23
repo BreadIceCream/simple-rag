@@ -17,8 +17,8 @@ from langchain_docling import DoclingLoader
 
 from app.config.global_config import global_config
 from app.core.chunking import EXT_TO_LANGUAGE
-from app.core.retriever import EnhancedParentDocumentRetrieverFactory
-from app.models.common import LoadDocToVectorStoreResult
+from app.core.retriever import EnhancedParentDocumentRetrieverFactory, ElasticSearchFactory
+from app.models.common import LoadDocToStoreResult
 
 # 支持的文件后缀
 TEXT_EXTENSIONS = set(EXT_TO_LANGUAGE.keys()) | {".md", ".txt"}
@@ -310,8 +310,8 @@ class DocumentLoaderChain:
 
         # 注册内置的 DocumentLoader 子类
         import torch
-        chain.register(DoclingDocumentLoader(order=10 if torch.cuda.is_available() else 20))  # GPU环境优先使用Docling加载Office文件，CPU环境放后面避免性能问题
-        chain.register(TrafilaturaLoader(order=10))
+        chain.register(DoclingDocumentLoader(order=15 if torch.cuda.is_available() else 20))  # GPU环境优先使用Docling加载Office文件，CPU环境放后面避免性能问题
+        chain.register(TrafilaturaLoader(order=15))
         chain.register(PDFLoader(order=10))
         chain.register(HTMLLoader(order=10))
         chain.register(TextLoader(order=10))
@@ -374,8 +374,8 @@ class DocumentLoaderChain:
         return cls._instance
 
 
-async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False) -> \
-        LoadDocToVectorStoreResult:
+async def load_doc_to_store(path: str, file_id: str, is_url: bool = False) -> \
+        LoadDocToStoreResult:
     """
     加载文档，分块与两层存储（子块向量 + 父文档持久化）。
         1. 使用DocumentLoaderChain加载文档，添加file_id元数据
@@ -383,7 +383,7 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
     :param path: 文档路径/url
     :param file_id: 文档唯一标识（数据库id）
     :param is_url: 是否为url
-    :return: LoadDocToVectorStoreResult
+    :return: LoadDocToStoreResult
     """
     print(f"LOADING DOCUMENTS TASK: Loading document <{file_id}>: {path}...")
     try:
@@ -426,9 +426,10 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
             if text_length < global_config.get("text_file_length_threshold", 1000):
                 enable_parent_splitter = False
 
-        # 6. 使用 EnhancedParentDocumentRetrieverFactory 添加文档
+        # 6. 使用 EnhancedParentDocumentRetrieverFactory 和 ElasticSearchFactory 添加文档
         pd_add_docs_result = EnhancedParentDocumentRetrieverFactory.add_documents(file_type=file_ext, documents=docs,
                                                              use_parent=enable_parent_splitter, add_to_docstore=True)
+        ElasticSearchFactory.bulk_index_documents(pd_add_docs_result.children_docs)
 
         # 7. 获取结果
         parent_splitter_name = pd_add_docs_result.parent_splitter_name
@@ -442,8 +443,8 @@ async def load_doc_to_vector_store(path: str, file_id: str, is_url: bool = False
             f"Loader: {loader_name}. Parent Splitter: {parent_splitter_name}, "
             f"Parent Doc count {len(parent_doc_ids)}. Children Doc count {children_count}. "
             f"Cost: {cost:.2f}s")
-        return LoadDocToVectorStoreResult(file_id, None, loader_name,
-                                          parent_splitter_name, parent_doc_ids,
-                                          children_count, cost, url_info)
+        return LoadDocToStoreResult(file_id, None, loader_name,
+                                    parent_splitter_name, parent_doc_ids,
+                                    children_count, cost, url_info)
     except Exception as e:
-        return LoadDocToVectorStoreResult.error(file_id, e)
+        return LoadDocToStoreResult.error(file_id, e)

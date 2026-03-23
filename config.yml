@@ -4,6 +4,10 @@ database:
   url: postgresql+asyncpg://postgres:pg123456@localhost:5432/simple_rag # postgres
 #  url: "mysql+aiomysql://root:123456@localhost:3306/simple_rag?charset=utf8" # mysql
 
+elasticsearch:
+  url: https://localhost:9200
+  username: elastic
+
 chat_model:
   # 确保你使用的模型API_KEY已经设置（.env或环境变量）
   default: gpt-5-mini  # 默认模型

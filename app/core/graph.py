@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
 from app.core.retriever import HybridPDRetrieverFactory, EnhancedParentDocumentRetrieverFactory
-from app.models.state import GraphState, GradeDocuments, HallucinationCheck, UsefulnessCheck
+from app.models.state import GraphState, GradeDocuments, HallucinationCheck, UsefulnessCheck, SetOriginalQuestion
 
 # ======================== 元数据过滤 ========================
 
@@ -71,6 +71,16 @@ class GetDocsPageInput(BaseModel):
 
 
 # ======================== Prompt Templates ========================
+
+SET_ORIGINAL_QUESTION_PROMPT = (
+    "你是一个对话助手，负责判断是否需要更新用户的原始问题。流程如下：\n"
+    "1. 根据对话历史，判断上一个问题是否已解决。\n"
+    "2. 若未解决，且用户未提出新问题，则 original_question 保持不变，回答 'keep'。\n"
+    "3. 若已解决，或用户提出新问题，则重新设置 original_question。回答 'update'。\n"
+    "以下是对话历史: \n\n{history}\n\n"
+    "以下是上一个问题: \n\n{last_question}\n\n"
+    "直接给出 'keep' 或 'update' 的二元答案，严禁任何额外的说明或引导语。"
+)
 
 GRADE_DOCUMENTS_PROMPT = (
     "你是一个评估检索文档与用户问题相关性的评分员。\n"
@@ -286,13 +296,13 @@ class Graph:
     def generate_answer(cls, state: GraphState):
         """
         基于检索到的文档生成最终回答。
-        使用 original_message 作为问题（不受 rewrite 影响）。
+        使用 original_question 作为问题（不受 rewrite 影响）。
         """
         writer = get_stream_writer()
         writer({cls._event_description: "Generating answer based on retrieved documents...", cls._status_key: "progress"})
 
         messages = state["messages"]
-        question = state.get("original_message", messages[0].content)
+        question = state.get("original_question", messages[0].content)
 
         # 上下文: 最近一条 ToolMessage 的内容
         context = ""
@@ -312,11 +322,11 @@ class Graph:
     def rewrite_question(cls, state: GraphState):
         """
         问题重写节点: 当检索文档不相关或回答无用时，重写问题以优化检索。
-        递增 rewrite_count 防止无限循环。使用 original_message 作为重写基准。
+        递增 rewrite_count 防止无限循环。使用 original_question 作为重写基准。
         """
         writer = get_stream_writer()
 
-        question = state.get("original_message", state["messages"][0].content)
+        question = state.get("original_question", state["messages"][0].content)
 
         prompt = REWRITE_QUESTION_PROMPT.format(question=question)
         response = cls._response_llm.invoke([HumanMessage(content=prompt)])
@@ -331,13 +341,24 @@ class Graph:
     @classmethod
     def init_graph_state(cls, state: GraphState):
         """
-        初始化 state，重新设置 documents, rewrite_count, generate_count
+        初始化 state，重新设置 documents, rewrite_count, generate_count.
+        并根据上下文设置 original_question (若上次对话未解决问题, 不重写，若已解决则重写)
         :param state:
         :return:
         """
         writer = get_stream_writer()
         writer({cls._event_description: "Init graph state...", cls._status_key: "progress"})
-        return {"documents": [], "rewrite_count": 0, "generate_count": 0}
+
+        init_state = {"documents": [], "rewrite_count": 0, "generate_count": 0}
+
+        # 判断是否需要更新原始问题
+        prompt = SET_ORIGINAL_QUESTION_PROMPT.format(history=state.get("messages", []), last_question=state.get("original_question", ""))
+        response = cls._light_llm.with_structured_output(SetOriginalQuestion).invoke([HumanMessage(content=prompt)])
+
+        if response.binary_score == "update":
+            # 用最新的消息进行更新
+            init_state.update({"original_question": state.get("messages", [])[-1].content})
+        return init_state
 
     @classmethod
     def compact_tool_messages(cls, state: GraphState):
@@ -451,7 +472,7 @@ class Graph:
                   f"forcing generate_answer.")
             return "generate_answer"
 
-        question = state.get("original_message", state["messages"][0].content)
+        question = state.get("original_question", state["messages"][0].content)
 
         prompt = GRADE_DOCUMENTS_PROMPT.format(question=question, context=tool_message.content)
         response = cls._light_llm.with_structured_output(GradeDocuments).invoke(
@@ -521,7 +542,7 @@ class Graph:
                   f"forcing END.")
             return "__end__"
 
-        question = state.get("original_message", state["messages"][0].content)
+        question = state.get("original_question", state["messages"][0].content)
         generation = state["messages"][-1].content
 
         prompt = CHECK_USEFULNESS_PROMPT.format(question=question, generation=generation)
@@ -628,7 +649,7 @@ class Graph:
             # 之后在路由中:
             graph = Graph.get_compiled_graph()
             result = graph.invoke(
-                {"messages": [{"role": "user", "content": "..."}], "original_message": "..."},
+                {"messages": [{"role": "user", "content": "..."}], "original_question": "..."},
                 {"configurable": {"conversation_id": "session_123"}},
             )
         """

@@ -7,3 +7,4 @@ store/
 **/parent_docs
 __pycache__
 .agents/
+http_ca.crt

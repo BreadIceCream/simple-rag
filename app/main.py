@@ -8,7 +8,7 @@ from app.config.global_config import global_config
 from app.core.chunking import SplitterRegistry
 from app.core.document_loader import DocumentLoaderChain
 from app.core.reranker import RerankerFactory
-from app.core.retriever import EnhancedParentDocumentRetrieverFactory, HybridPDRetrieverFactory
+from app.core.retriever import EnhancedParentDocumentRetrieverFactory, HybridPDRetrieverFactory, ElasticSearchFactory
 from app.core.graph import Graph
 from app.core.embeddings import EmbeddingModelFactory
 from app.core.vector_store import VectorStoreFactory
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
     SplitterRegistry.init()
     EnhancedParentDocumentRetrieverFactory.init(vectorstore, docstore)
     RerankerFactory.init()
+    ElasticSearchFactory.init()
     HybridPDRetrieverFactory.init()
     Graph.build()
     yield

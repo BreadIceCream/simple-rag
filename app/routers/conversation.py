@@ -53,7 +53,6 @@ async def chat(
 
     inputs = {
         "messages": [HumanMessage(content=message)],
-        "original_message": message,
     }
     config: RunnableConfig = {
         "configurable": {"thread_id": conversation_id_str,},

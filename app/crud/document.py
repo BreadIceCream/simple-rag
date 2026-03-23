@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.core.chunking import SplitterRegistry
-from app.core.document_loader import load_doc_to_vector_store
-from app.core.retriever import EnhancedParentDocumentRetriever
+from app.core.document_loader import load_doc_to_store
+from app.core.retriever import EnhancedParentDocumentRetriever, ElasticSearchFactory, \
+    EnhancedParentDocumentRetrieverFactory
 from app.exception.exception import CustomException
 from app.models.schemas import EmbeddedDocument
 
@@ -73,21 +74,21 @@ async def get_document_by_ids(doc_ids: list[str], db: AsyncSession) -> list[Embe
     return ordered_docs
 
 
-async def upload_document(path: str, summary: str, is_url: bool, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
+async def upload_document(path: str, summary: str, is_url: bool, db: AsyncSession):
     """
     上传文档/读取网页，通过 ParentDocumentRetriever 分块并入库，文件信息存储在数据库中
     :param path:
     :param summary: 文件内容摘要
     :param is_url:
-    :param pd_retriever:
     :param db:
     :return: 0 表示成功
     """
     load_result = None
+    pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
     try:
         # 1. 对文档进行分块（由 retriever.add_documents 自动完成）
         file_id = str(uuid.uuid4())
-        load_result = await load_doc_to_vector_store(path, file_id, is_url)
+        load_result = await load_doc_to_store(path, file_id, is_url)
         if load_result.error:
             raise Exception(f"Failed to load document <{path}>: {load_result.error}")
         # 2. 构造入库对象
@@ -138,19 +139,20 @@ async def upload_document(path: str, summary: str, is_url: bool, pd_retriever: E
         raise e
 
 
-async def delete_document(doc_id: str, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
+async def delete_document(doc_id: str, db: AsyncSession):
     """
-    删除文档，同时删除向量数据库中的相关数据
+    删除文档，同时删除elasticsearch、向量数据库中的相关数据
     :param doc_id: 数据库中的文档ID
-    :param pd_retriever:
     :param db:
     :return: 0 表示成功
     """
     doc = await get_document_by_id(doc_id, db)
+    pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
     # 1. 删除向量数据库中的相关数据
     if doc.parent_doc_ids:
         print(f"DELETE DOCUMENT: Deleting document <{doc_id}> in docstore and vector store: "
               f"{len(doc.parent_doc_ids)} parent docs and {doc.children_count} child docs...")
+        ElasticSearchFactory.delete_by_parent_ids(doc.parent_doc_ids)
         pd_retriever.delete_docs_cascade(doc.parent_doc_ids)
     # 2. 删除数据库中的文档记录
     await db.delete(doc)
@@ -158,16 +160,16 @@ async def delete_document(doc_id: str, pd_retriever: EnhancedParentDocumentRetri
     return 0
 
 
-async def get_parent_chunks(doc_id: str, offset: int, limit: int, pd_retriever: EnhancedParentDocumentRetriever, db: AsyncSession):
+async def get_parent_chunks(doc_id: str, offset: int, limit: int, db: AsyncSession):
     """
     获取文件切分后的父文档列表，支持分页
     :param doc_id: 数据库中的文档ID
     :param offset:
     :param limit:
-    :param pd_retriever:
     :param db:
     :return: 父文档总数和父文档列表
     """
+    pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
     doc = await get_document_by_id(doc_id, db)
     total = len(doc.parent_doc_ids)
     if total == 0:
@@ -178,3 +180,21 @@ async def get_parent_chunks(doc_id: str, offset: int, limit: int, pd_retriever: 
     for _, parent_doc in parent_docs_tuple:
         result_list.append(parent_doc)
     return total, result_list
+
+
+async def get_children_chunks(doc_id: str, offset: int, limit: int, db: AsyncSession):
+    """
+    获取文件切分后的子文档列表
+    :param doc_id:
+    :param offset:
+    :param limit:
+    :param db:
+    :return:
+    """
+    pd_retriever = EnhancedParentDocumentRetrieverFactory.get_instance()
+    doc = await get_document_by_id(doc_id, db)
+    if doc.children_count == 0:
+        return 0, []
+    all_children_docs = pd_retriever.get_child_docs(doc.parent_doc_ids)
+    result_list = all_children_docs[offset: offset + limit]
+    return len(all_children_docs), result_list
