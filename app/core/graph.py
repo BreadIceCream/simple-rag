@@ -31,7 +31,6 @@ from langgraph.types import Command
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
-from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
 from app.core.retriever import HybridPDRetrieverFactory, EnhancedParentDocumentRetrieverFactory
 from app.models.state import GraphState, GradeDocuments, HallucinationCheck, UsefulnessCheck, SetOriginalQuestion
@@ -739,11 +738,12 @@ class Graph:
         print("GRAPH: Graph built and compiled successfully.")
 
         # 将图绘制到项目根目录的 graph.md 中
-        from pathlib import Path
-        rag_root = Path(__file__).resolve().parent.parent.parent
-        with open(rag_root / "graph.md", "w", encoding="utf-8") as f:
-            f.write(cls._compiled_graph.get_graph().draw_mermaid())
-            print(f"GRAPH: Graph visualization saved to {rag_root / 'graph.md'}")
+        if global_config.get("graph", {}).get("visualization", False):
+            from pathlib import Path
+            rag_root = Path(__file__).resolve().parent.parent.parent
+            with open(rag_root / "graph.md", "w", encoding="utf-8") as f:
+                f.write(cls._compiled_graph.get_graph().draw_mermaid())
+                print(f"GRAPH: Graph visualization saved to {rag_root / 'graph.md'}")
 
         return cls._compiled_graph
 

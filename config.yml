@@ -10,7 +10,7 @@ elasticsearch:
 
 chat_model:
   # 确保你使用的模型API_KEY已经设置（.env或环境变量）
-  default: gpt-5-mini  # 默认模型
+  default: gpt-4o-mini  # 默认模型
   light: gpt-4o-mini   # 轻巧模型，用于Self-reflection自我检查任务
 
 embedding:
@@ -43,6 +43,9 @@ chat:
   max_rewrite_time: 2
   max_generate_time: 3
   conversation_summarize_threshold: 10
+
+graph:
+  visualization: true
 
 # 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter
 text_file_length_threshold: 1500
