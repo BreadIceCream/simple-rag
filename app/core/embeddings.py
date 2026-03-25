@@ -1,13 +1,7 @@
-import os
-from getpass import getpass
-
 import torch
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-
 from langchain_core.embeddings import Embeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings, HuggingFaceEmbeddings
 from langchain_openai.embeddings import OpenAIEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
-from pydantic import SecretStr
 
 
 class EmbeddingModelFactory:
@@ -44,18 +38,14 @@ class EmbeddingModelFactory:
         else:
             if embedding_config.get("huggingface_remote_inference", {}).get("enabled", False):
                 print(f"INIT EMBEDDING MODEL REMOTE: Using HuggingFace Inference API embedding model <{embedding_model}>...")
-                api_token = os.environ["HUGGINGFACE_API_TOKEN"] \
-                    if "HUGGINGFACE_API_TOKEN" in os.environ \
-                    else getpass("Enter HuggingFace API Token: ")
-                cls._instance = HuggingFaceInferenceAPIEmbeddings(
-                    api_key=SecretStr(api_token),
-                    model_name=embedding_model,
+                cls._instance = HuggingFaceEndpointEmbeddings(
+                    model=embedding_model,
                 )
             else:
                 print(f"INIT EMBEDDING MODEL LOCAL: Using HuggingFace embedding model <{embedding_model}>...")
                 cls._instance = HuggingFaceEmbeddings(
                     model_name=embedding_model,
-                    model_kwargs={"device": device},
+                    model_kwargs={"device": device, "local_files_only": True},
                 )
         print("INIT EMBEDDING MODEL: Initialized successfully.")
         return cls._instance

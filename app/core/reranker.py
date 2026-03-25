@@ -1,6 +1,7 @@
 import asyncio
-import torch
 from typing import List, Sequence, Any, Optional
+
+import torch
 from langchain_core.callbacks import Callbacks
 from langchain_core.documents import BaseDocumentCompressor
 from langchain_core.documents.base import Document
@@ -31,7 +32,7 @@ class QwenNativeReranker(BaseDocumentCompressor):
         print(f"initializing Qwen Native Re-ranker model: {self.model_name}...")
 
         # 1. init model and tokenizer
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side='left', trust_remote_code=True)
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side='left', trust_remote_code=True, local_files_only=True)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
 
