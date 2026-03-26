@@ -5,8 +5,11 @@ import asyncio
 import uuid
 from pathlib import Path
 
+from langchain.chat_models import init_chat_model
+
 from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
+from app.core.embeddings import EmbeddingModelFactory
 from app.evals.dataset_builder import (
     build_records_from_chat_history,
     default_dataset_path,
@@ -45,6 +48,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=100, help="max samples when reading from chat_history")
     parser.add_argument("--output-root", default=str(_DEFAULT_OUTPUT_ROOT), help="report output directory")
+    parser.add_argument("--use-light-model", action="store_true", help="use chat_model.light as generator llm")
     return parser.parse_args()
 
 
@@ -55,7 +59,6 @@ def _load_records(source: str, dataset: str, dataset_path: str, limit: int):
         return load_records_from_jsonl(path), "jsonl"
 
     if source == "history":
-        _init_db_runtime()
         try:
             return build_records_from_chat_history(limit=limit), "chat_history"
         finally:
@@ -65,11 +68,28 @@ def _load_records(source: str, dataset: str, dataset_path: str, limit: int):
     if path.exists():
         return load_records_from_jsonl(path), "jsonl"
 
-    _init_db_runtime()
     try:
         return build_records_from_chat_history(limit=limit), "chat_history"
     finally:
         _close_db_runtime()
+
+def _load_models(llm_name: str):
+    llm = init_chat_model(llm_name)
+    embeddings = EmbeddingModelFactory.init_embedding_model()
+
+    try:
+        from ragas.llms import LangchainLLMWrapper
+        llm_obj = LangchainLLMWrapper(llm)
+    except Exception:
+        llm_obj = llm
+
+    try:
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        embeddings_obj = LangchainEmbeddingsWrapper(embeddings)
+    except Exception:
+        embeddings_obj = embeddings
+
+    return llm_obj, embeddings_obj
 
 
 def main() -> None:
@@ -80,18 +100,23 @@ def main() -> None:
     except ImportError as e:
         raise ImportError("ragas is not installed. Please install requirements first.") from e
 
+    _init_db_runtime()
     records, source = _load_records(args.source, args.dataset, args.dataset_path, args.limit)
     has_reference = all((record.reference is not None and record.reference.strip()) for record in records)
 
     metrics_selection = select_single_turn_metrics(has_reference=has_reference)
     dataset = records_to_ragas_dataset(records)
+    chat_cfg = global_config.get("chat_model", {})
+    model_name = chat_cfg.get("light") if args.use_light_model else chat_cfg.get("default")
+    llm, embeddings = _load_models(model_name)
 
     print(
         f"EVAL RUNNER: loaded {len(records)} samples from {source}, "
-        f"metrics={metrics_selection.metric_names}, skipped={metrics_selection.skipped}"
+        f"metrics={metrics_selection.metric_names}, skipped={metrics_selection.skipped}. "
+        f"llm={llm}, embeddings={embeddings}"
     )
 
-    result = evaluate(dataset=dataset, metrics=metrics_selection.metrics)
+    result = evaluate(dataset=dataset, metrics=metrics_selection.metrics, llm=llm, embeddings=embeddings)
 
     run_id = uuid.uuid4().hex[:12]
     run_dir = write_experiment_report(

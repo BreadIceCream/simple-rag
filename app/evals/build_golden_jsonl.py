@@ -225,8 +225,17 @@ def _resolve_testset_generator(llm: Any, embeddings: Any):
     except ImportError as e:
         raise ImportError("Cannot import ragas.testset.TestsetGenerator.") from e
 
-    llm_obj = llm
-    embeddings_obj = embeddings
+    try:
+        from ragas.llms import LangchainLLMWrapper
+        llm_obj = LangchainLLMWrapper(llm)
+    except Exception:
+        llm_obj = llm
+
+    try:
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        embeddings_obj = LangchainEmbeddingsWrapper(embeddings)
+    except Exception:
+        embeddings_obj = embeddings
 
     init_sig = inspect.signature(TestsetGenerator)
     kwargs = {}
@@ -363,3 +372,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

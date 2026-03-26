@@ -212,7 +212,7 @@ pip install -r requirements.txt
 2. 使用 `parent_docs` + `generate_with_chunks` 构建黄金集（不填 response）
 
 ```bash
-python -m app.evals.build_golden_jsonl --size 300 --doc-limit 30 --output store/evals/datasets/v1.generated.jsonl
+python -m app.evals.build_golden_jsonl --size 200 --doc-limit 30 --recency-tau-days 100.0 --alloc-alpha 0.9 --output store/evals/datasets/v3.generated.jsonl
 ```
 
 3. 基于黄金集生成“当次系统回答文件”（保留原黄金集文件不变）  
@@ -244,25 +244,42 @@ store/evals/experiments/<run_id>/
 命令示例：
 
 ```bash
-python -m app.evals.build_golden_jsonl --size 100 --output store/evals/datasets/v1.generated.jsonl
+python -m app.evals.build_golden_jsonl --size 200 --doc-limit 30 --recency-tau-days 100.0 --alloc-alpha 0.9 --output store/evals/datasets/v3.generated.jsonl
 ```
 
 参数：
 
 1. `--size`  
    目标样本数。默认 `100`。
+
 2. `--output`  
    输出 jsonl 路径。默认：`store/evals/datasets/v1.generated.jsonl`。
+
 3. `--doc-limit`  
    参与构建的源文档数量上限。默认 `30`。
+
 4. `--seed`  
    随机种子。默认 `42`（保证可复现）。
+
 5. `--recency-tau-days`  
    文档时间衰减系数（天）。默认 `30.0`。控制“新文档优先”的强弱。
+
+   * 作用：控制“越新的文档权重越高”的强弱。
+
+   * 增大时：衰减更慢，老文档权重更接近新文档，**采样更均匀、更“全局”**。
+
+   * 减小时：衰减更快，新文档被抽中的概率显著提高，采样更偏近期。
+
 6. `--alloc-alpha`  
    父文档块动态分配指数。默认 `0.7`。控制块预算向“大文档”倾斜程度。
+
+   - 作用：控制父文档块预算向“大文档（parent_docs 多）”倾斜的强度。
+   - 增大时：更偏向父块多的文档，头部文档拿到更多块，覆盖更集中。
+   - 减小时：分配更平滑，更多文档能分到块，覆盖更分散。
+
 7. `--use-light-model`  
    开启后使用 `chat_model.light` 作为生成模型；默认使用 `chat_model.default`。
+
 8. `--fill-response-with-reference`  
    开启后会把 `response` 直接填为 `reference`（用于快速打通，不建议作为正式评测输入）。
 
@@ -285,7 +302,7 @@ python -m app.evals.build_golden_jsonl --size 100 --output store/evals/datasets/
 命令示例：
 
 ```bash
-python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v1.generated.jsonl
+python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v3.generated.jsonl
 ```
 
 参数：
@@ -327,7 +344,7 @@ python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets
 命令示例：
 
 ```bash
-python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v1.generated.run_YYYYMMDD_HHMMSS.jsonl
+python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v3.generated.run_20260326_130202.jsonl
 ```
 
 参数：
@@ -343,6 +360,8 @@ python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datas
    当 `--source history` 时，最多抽样条数。默认 `100`。
 5. `--output-root`  
    评测输出根目录。默认 `store/evals/experiments`。
+6. `--use-light-model`  
+   开启后使用 `chat_model.light` 作为生成模型；默认使用 `chat_model.default`。
 
 说明：
 
