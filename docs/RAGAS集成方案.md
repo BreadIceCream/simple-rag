@@ -180,7 +180,7 @@
      - `metrics_registry.py`
      - `reporter.py`
 3. 数据抽取器
-   - 从 `chat_history + parent_doc_ids + parent_doc内容`组装 `SingleTurnSample` 所需字段。
+   - 从 `parent_docs` 构建测试样本：按文档带权随机抽样，再按父文档数量动态配额抽块。
 4. 建立首批黄金集
    - 50~100 条高价值问答（覆盖 PDF/HTML/Markdown/代码文档场景）。
 5. 输出首份基线报告
@@ -197,6 +197,169 @@
 1. 评测任务可稳定跑完（成功率 > 95%）。
 2. 输出至少 4 个核心 RAG 指标。
 3. 可定位低分样本与对应上下文。
+
+### P0 严格执行步骤（按顺序）
+
+> 本节为当前项目的“标准 P0 操作流程”。  
+> 流程固定为：`parent_docs -> generate_with_chunks -> 用 retrieved_contexts 生成 response -> RAGAS 评测`。
+
+1. 安装依赖（包含 `ragas`）
+
+```bash
+pip install -r requirements.txt
+```
+
+2. 使用 `parent_docs` + `generate_with_chunks` 构建黄金集（不填 response）
+
+```bash
+python -m app.evals.build_golden_jsonl --size 300 --doc-limit 30 --output store/evals/datasets/v1.generated.jsonl
+```
+
+3. 基于黄金集生成“当次系统回答文件”（保留原黄金集文件不变）  
+   默认使用 `retrieved_contexts` 作为上下文（当前脚本默认值）。
+
+```bash
+python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v1.generated.jsonl
+```
+
+4. 运行 RAGAS 评测（输入第 3 步生成的 run 文件）
+
+```bash
+python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v1.generated.run_YYYYMMDD_HHMMSS.jsonl
+```
+
+5. 查看评测产物
+
+```text
+store/evals/experiments/<run_id>/
+  ├─ item_scores.csv
+  ├─ summary.json
+  └─ records.jsonl
+```
+
+### P0 脚本参数说明
+
+#### A. `app.evals.build_golden_jsonl`（黄金集构建）
+
+命令示例：
+
+```bash
+python -m app.evals.build_golden_jsonl --size 100 --output store/evals/datasets/v1.generated.jsonl
+```
+
+参数：
+
+1. `--size`  
+   目标样本数。默认 `100`。
+2. `--output`  
+   输出 jsonl 路径。默认：`store/evals/datasets/v1.generated.jsonl`。
+3. `--doc-limit`  
+   参与构建的源文档数量上限。默认 `30`。
+4. `--seed`  
+   随机种子。默认 `42`（保证可复现）。
+5. `--recency-tau-days`  
+   文档时间衰减系数（天）。默认 `30.0`。控制“新文档优先”的强弱。
+6. `--alloc-alpha`  
+   父文档块动态分配指数。默认 `0.7`。控制块预算向“大文档”倾斜程度。
+7. `--use-light-model`  
+   开启后使用 `chat_model.light` 作为生成模型；默认使用 `chat_model.default`。
+8. `--fill-response-with-reference`  
+   开启后会把 `response` 直接填为 `reference`（用于快速打通，不建议作为正式评测输入）。
+
+作用：
+
+1. 基于 `parent_docs` 直接构建黄金集，不依赖 `chat_history`。
+2. 自动调用 RAGAS 的 `generate_with_chunks` 生成测试样本。
+3. 将结果标准化为当前项目可评测的 jsonl 格式。
+
+原理：
+
+1. 文档抽样：对 `embedded_document` 做“带权随机不放回采样”，时间越近权重越高（由 `recency_tau_days` 控制），最多抽 `doc-limit` 个。
+2. 动态配额：以 `size` 作为总块预算，按每个文档 `parent_doc_ids` 数量，以 `alloc_alpha` 做预算分配，多文档多取、少文档少取。
+3. 参与约束：参与构建的源文档保证至少抽到 1 个父文档块（在 `size` 足够时）。
+4. 块内抽样：每个选中文档内部再随机抽取父文档块，保持随机性和覆盖面。
+5. 样本生成：将抽到的父文档块作为 `chunks` 输入 `generate_with_chunks`，产出问题 `user_input`、参考答案 `reference` 和参考上下文 `retrieved_contexts`。
+
+#### B. `app.evals.fill_response_from_graph_prompt`（填充 response）
+
+命令示例：
+
+```bash
+python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v1.generated.jsonl
+```
+
+参数：
+
+1. `--input`  
+   输入黄金集 jsonl（必填）。
+2. `--output`  
+   输出 run 文件路径。默认自动生成到：`store/evals/datasets/runs/<input_stem>.run_<timestamp>.jsonl`。
+3. `--context-mode`  
+   上下文来源，支持：`retrieved` / `reference` / `both`。默认 `retrieved`（推荐）。
+4. `--qps`  
+   每秒请求数上限。默认 `10`。
+5. `--concurrency`  
+   最大并发 in-flight 请求数。默认 `10`。
+6. `--model`  
+   覆盖默认模型名；不传则使用 `chat_model.default`。
+7. `--skip-existing-response`  
+   开启后跳过已有非空 `response` 的样本。
+
+说明：
+
+1. 该脚本复用 `app/core/graph.py` 的 `GENERATE_ANSWER_PROMPT`。
+2. 该脚本不会走完整 LangGraph 流程；仅执行“拼 prompt + `llm.invoke`”。
+3. 输入黄金集文件不会被覆盖，输出为新 run 文件（符合“两份文件”策略）。
+
+作用：
+
+1. 为黄金集补齐“系统当次回答（response）”。
+2. 形成可用于回归评测的 run 文件，不污染原始黄金集。
+
+原理：
+
+1. 逐条读取 `user_input`，按 `context-mode` 选择上下文（默认 `retrieved_contexts`）。
+2. 套用 `GENERATE_ANSWER_PROMPT` 构造提示词，调用 `llm.invoke` 生成回答。
+3. 通过 `qps + concurrency` 做吞吐与并发控制，最终写入新 jsonl。
+
+#### C. `app.evals.ragas_runner`（离线评测）
+
+命令示例：
+
+```bash
+python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v1.generated.run_YYYYMMDD_HHMMSS.jsonl
+```
+
+参数：
+
+1. `--dataset`  
+   数据集名称，默认 `v1`。当 `--dataset-path` 未给定时用于解析 `store/evals/datasets/<dataset>.jsonl`。
+2. `--dataset-path`  
+   直接指定 jsonl 文件路径。优先级高于 `--dataset`。
+3. `--source`  
+   数据来源：`auto` / `jsonl` / `history`。  
+   当前严格 P0 流程建议使用 `jsonl`。
+4. `--limit`  
+   当 `--source history` 时，最多抽样条数。默认 `100`。
+5. `--output-root`  
+   评测输出根目录。默认 `store/evals/experiments`。
+
+说明：
+
+1. P0 严格流程里推荐固定 `--source jsonl`，保证可复现。
+2. 报告中 `summary.json` 为均值汇总，`item_scores.csv` 为样本级分数。
+
+作用：
+
+1. 统一执行 RAGAS 离线评测并导出报告。
+2. 输出样本级和汇总级结果，支持后续回归对比。
+
+原理：
+
+1. 将 jsonl 转成 RAGAS `EvaluationDataset`（SingleTurnSample）。
+2. 自动装配单轮指标（如 faithfulness、answer_relevancy、context_precision、context_recall*）。
+3. 运行 `evaluate(...)` 计算样本分数，并对数值列聚合均值输出。  
+   注：`context_recall` 需要样本中存在 `reference`。
 
 ---
 
@@ -465,4 +628,3 @@
 3. RAGAS LangGraph 集成（Agent 指标）：Tool Call Accuracy / Agent Goal Accuracy
 4. RAGAS 迁移说明（v0.3 -> v0.4）
 5. RAGAS 论文（EACL 2024 Demo）
-
