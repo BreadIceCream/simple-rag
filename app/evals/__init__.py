@@ -1,2 +1,1 @@
-"""P0 evaluation toolkit based on RAGAS."""
-
+"""Evaluation toolkit for dataset building, live RAG execution, and scoring."""

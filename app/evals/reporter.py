@@ -1,73 +1,81 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import csv
 import json
-from dataclasses import asdict
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
-from app.evals.dataset_builder import EvalRecord
+from app.evals.schema import EvalDatasetManifest, EvalRunRecord, read_jsonl, write_jsonl
 
 
-def _safe_result_dataframe(result: Any) -> pd.DataFrame:
-    if hasattr(result, "to_pandas"):
-        return result.to_pandas()
-
-    if isinstance(result, dict):
-        return pd.DataFrame([result])
-
-    rows = getattr(result, "scores", None)
-    if rows:
-        return pd.DataFrame(rows)
-
-    raise RuntimeError("Unsupported RAGAS result object: cannot convert to pandas dataframe.")
+def experiment_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "store" / "evals" / "experiments"
 
 
-def _summary_from_df(df: pd.DataFrame) -> dict[str, float]:
-    numeric_df = df.select_dtypes(include=["number"])
-    if numeric_df.empty:
-        return {}
-    return {str(k): float(v) for k, v in numeric_df.mean(numeric_only=True).to_dict().items()}
-
-
-def write_experiment_report(
-    *,
-    run_id: str,
-    output_root: Path,
-    records: list[EvalRecord],
-    result: Any,
-    metric_names: list[str],
-    skipped_metrics: list[str],
-    source: str,
-) -> Path:
-    run_dir = output_root / run_id
+def new_run_dir(output_root: str | Path | None = None) -> tuple[str, Path]:
+    root = Path(output_root) if output_root else experiment_root()
+    run_id = uuid.uuid4().hex[:12]
+    run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    return run_id, run_dir
 
-    df = _safe_result_dataframe(result)
-    summary = _summary_from_df(df)
 
-    (run_dir / "item_scores.csv").write_text(df.to_csv(index=False), encoding="utf-8")
-
-    with (run_dir / "summary.json").open("w", encoding="utf-8") as f:
-        json.dump(
+def write_run_artifacts(
+    *,
+    run_dir: str | Path,
+    manifest: EvalDatasetManifest,
+    records: list[EvalRunRecord],
+    config_snapshot: dict[str, Any],
+    source_label: str,
+) -> Path:
+    output_dir = Path(run_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "dataset_manifest.json").write_text(
+        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "config.json").write_text(
+        json.dumps(config_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "run_meta.json").write_text(
+        json.dumps(
             {
-                "run_id": run_id,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "source": source,
+                "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "source": source_label,
                 "sample_count": len(records),
-                "metrics": metric_names,
-                "skipped_metrics": skipped_metrics,
-                "metric_avg": summary,
             },
-            f,
             ensure_ascii=False,
             indent=2,
-        )
+        ),
+        encoding="utf-8",
+    )
+    write_jsonl(output_dir / "records.jsonl", [record.to_dict() for record in records])
+    return output_dir
 
-    with (run_dir / "records.jsonl").open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
 
-    return run_dir
+def load_run_records(run_dir: str | Path) -> list[EvalRunRecord]:
+    rows = read_jsonl(Path(run_dir) / "records.jsonl")
+    return [EvalRunRecord.from_dict(row) for row in rows]
+
+
+def write_summary(run_dir: str | Path, payload: dict[str, Any]) -> Path:
+    output_path = Path(run_dir) / "summary.json"
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
+
+
+def write_item_scores_csv(run_dir: str | Path, rows: list[dict[str, Any]]) -> Path:
+    output_path = Path(run_dir) / "item_scores.csv"
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return output_path

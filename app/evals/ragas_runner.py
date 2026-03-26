@@ -1,135 +1,48 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
-import asyncio
-import uuid
+import subprocess
+import sys
 from pathlib import Path
-
-from langchain.chat_models import init_chat_model
-
-from app.config.db_config import DatabaseManager
-from app.config.global_config import global_config
-from app.core.embeddings import EmbeddingModelFactory
-from app.evals.dataset_builder import (
-    build_records_from_chat_history,
-    default_dataset_path,
-    load_records_from_jsonl,
-    records_to_ragas_dataset,
-)
-from app.evals.metrics_registry import select_single_turn_metrics
-from app.evals.reporter import write_experiment_report
-
-_RAG_ROOT = Path(__file__).resolve().parent.parent.parent
-_DEFAULT_OUTPUT_ROOT = _RAG_ROOT / "store" / "evals" / "experiments"
-
-
-def _init_db_runtime() -> None:
-    global_config.load()
-    DatabaseManager.init()
-
-
-def _close_db_runtime() -> None:
-    try:
-        asyncio.run(DatabaseManager.close())
-    except RuntimeError:
-        # no running loop / or db not initialized
-        pass
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run P0 RAGAS evaluation.")
-    parser.add_argument("--dataset", default="v1", help="dataset name, default v1")
-    parser.add_argument("--dataset-path", default="", help="explicit dataset jsonl path")
-    parser.add_argument(
-        "--source",
-        choices=["auto", "jsonl", "history"],
-        default="auto",
-        help="auto: prefer jsonl if exists, else use chat_history",
-    )
-    parser.add_argument("--limit", type=int, default=100, help="max samples when reading from chat_history")
-    parser.add_argument("--output-root", default=str(_DEFAULT_OUTPUT_ROOT), help="report output directory")
-    parser.add_argument("--use-light-model", action="store_true", help="use chat_model.light as generator llm")
+    parser = argparse.ArgumentParser(description="Compatibility wrapper: execute live run then score it.")
+    parser.add_argument("--dataset-dir", required=True, help="dataset directory")
+    parser.add_argument("--output-root", default="", help="optional experiment output root")
+    parser.add_argument("--limit", type=int, default=0, help="optional max sample count")
+    parser.add_argument("--review-status", default="approved,pending", help="comma-separated allowed review statuses")
     return parser.parse_args()
-
-
-def _load_records(source: str, dataset: str, dataset_path: str, limit: int):
-    path = Path(dataset_path) if dataset_path else default_dataset_path(dataset)
-
-    if source == "jsonl":
-        return load_records_from_jsonl(path), "jsonl"
-
-    if source == "history":
-        try:
-            return build_records_from_chat_history(limit=limit), "chat_history"
-        finally:
-            _close_db_runtime()
-
-    # auto
-    if path.exists():
-        return load_records_from_jsonl(path), "jsonl"
-
-    try:
-        return build_records_from_chat_history(limit=limit), "chat_history"
-    finally:
-        _close_db_runtime()
-
-def _load_models(llm_name: str):
-    llm = init_chat_model(llm_name)
-    embeddings = EmbeddingModelFactory.init_embedding_model()
-
-    try:
-        from ragas.llms import LangchainLLMWrapper
-        llm_obj = LangchainLLMWrapper(llm)
-    except Exception:
-        llm_obj = llm
-
-    try:
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        embeddings_obj = LangchainEmbeddingsWrapper(embeddings)
-    except Exception:
-        embeddings_obj = embeddings
-
-    return llm_obj, embeddings_obj
 
 
 def main() -> None:
     args = _parse_args()
-
-    try:
-        from ragas import evaluate
-    except ImportError as e:
-        raise ImportError("ragas is not installed. Please install requirements first.") from e
-
-    _init_db_runtime()
-    records, source = _load_records(args.source, args.dataset, args.dataset_path, args.limit)
-    has_reference = all((record.reference is not None and record.reference.strip()) for record in records)
-
-    metrics_selection = select_single_turn_metrics(has_reference=has_reference)
-    dataset = records_to_ragas_dataset(records)
-    chat_cfg = global_config.get("chat_model", {})
-    model_name = chat_cfg.get("light") if args.use_light_model else chat_cfg.get("default")
-    llm, embeddings = _load_models(model_name)
-
-    print(
-        f"EVAL RUNNER: loaded {len(records)} samples from {source}, "
-        f"metrics={metrics_selection.metric_names}, skipped={metrics_selection.skipped}. "
-        f"llm={llm}, embeddings={embeddings}"
-    )
-
-    result = evaluate(dataset=dataset, metrics=metrics_selection.metrics, llm=llm, embeddings=embeddings)
-
-    run_id = uuid.uuid4().hex[:12]
-    run_dir = write_experiment_report(
-        run_id=run_id,
-        output_root=Path(args.output_root),
-        records=records,
-        result=result,
-        metric_names=metrics_selection.metric_names,
-        skipped_metrics=metrics_selection.skipped,
-        source=source,
-    )
-
-    print(f"EVAL RUNNER: done. report_dir={run_dir}")
+    live_cmd = [
+        sys.executable,
+        "-m",
+        "app.evals.live_rag_runner",
+        "--dataset-dir",
+        args.dataset_dir,
+        "--review-status",
+        args.review_status,
+    ]
+    if args.output_root:
+        live_cmd.extend(["--output-root", args.output_root])
+    if args.limit > 0:
+        live_cmd.extend(["--limit", str(args.limit)])
+    completed = subprocess.run(live_cmd, check=True, capture_output=True, text=True)
+    print(completed.stdout, end="")
+    run_dir = None
+    for line in completed.stdout.splitlines():
+        if line.startswith("LIVE RUN: artifacts="):
+            run_dir = line.split("=", 1)[1].strip()
+            break
+    if not run_dir:
+        raise RuntimeError("Could not determine run_dir from live runner output.")
+    score_cmd = [sys.executable, "-m", "app.evals.ragas_scorer", "--run-dir", run_dir]
+    scored = subprocess.run(score_cmd, check=True, capture_output=True, text=True)
+    print(scored.stdout, end="")
+    print(f"RAGAS RUNNER: completed run_dir={Path(run_dir)}")
 
 
 if __name__ == "__main__":

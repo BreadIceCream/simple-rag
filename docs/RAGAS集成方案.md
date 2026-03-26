@@ -1,649 +1,681 @@
-# RAGAS 分阶段集成方案（面向当前 Agentic RAG 项目）
+﻿# RAGAS 真实 RAG 评测集成方案
 
-## 1. 文档目标与范围
+## 1. 文档目标
 
-本文档给出一个可落地、分阶段的 RAGAS 集成方案，用于将当前项目从“运行时自评”升级为“可复现、可回归、可治理”的专业评测体系。  
-方案覆盖：
+本文档说明当前项目的 RAG 评测集成方案与现状实现，重点是：
 
-1. 现状评估与差距分析（基于现有代码）。
-2. 多阶段集成路线（P0/P1/P2/P3）。
-3. 指标体系（RAG 常见指标 + Agent 指标 + 工程指标）。
-4. 数据建模、接口设计、任务调度、结果治理。
-5. 每阶段交付物、验收标准、风险与回滚。
+1. 用真实 RAG 系统执行评测，而不是对合成四元组做静态自评。
+2. 将“数据集构建”和“测评执行”彻底解耦。
+3. 以统一 schema 支持多种数据集来源。
+4. 让文档与当前 `app/evals` 脚本实现保持一致。
 
-不在本方案范围：
+当前方案的核心结论：
 
-1. 前端看板的完整 UI 设计实现。
-2. 数据标注平台建设（仅给出最小可行流程）。
-3. 多租户评测隔离。
+1. 旧的 `build_golden_jsonl.py -> fill_response_from_graph_prompt.py -> ragas_runner.py` 不能代表真实 RAG 能力。
+2. 主评测链路必须是：`数据集构建 -> 人工审核（按需） -> 真实 RAG 执行 -> RAGAS/检索指标评分 -> 结果分析`。
+3. synthetic 数据集只适合作为冷启动、探索和 smoke test，不直接代表真实线上能力。
 
 ---
 
-## 2. 当前系统现状（与代码映射）
+## 2. 设计原则
 
-### 2.1 已有能力（可复用）
+### 2.1 数据集与测评执行解耦
 
-1. **检索与问答主链路完整**
-   - 混合检索 + RRF + 可选 rerank：`app/core/retriever.py`
-   - Agentic 对话图：`app/core/graph.py`
+1. 数据集负责回答“测什么问题”。
+2. 测评执行器负责回答“如何真实运行系统并如何打分”。
+3. 测评执行器不应因为数据集类别不同而切换主流程。
+4. 指标选择由样本字段完整性和 `capabilities` 决定，而不是由数据集类别决定。
 
-2. **运行时评估节点已存在（在线自评）**
-   - 检索相关性判断：`handle_retrieve_result`（`graph.py`）
-   - 幻觉判断：`check_hallucination`（`graph.py`）
-   - 有用性判断：`check_usefulness`（`graph.py`）
-   - 重试与上限：`max_rewrite_time`、`max_generate_time`
+### 2.2 真实评测优先
 
-3. **可回溯会话数据已持久化**
-   - 对话与消息：`conversation`、`chat_history`
-   - 每条 AI 回答对应 `parent_doc_ids`：`app/models/schemas.py -> ChatHistory.parent_doc_ids`
-   - SSE 输出可提取回答与参考片段：`app/routers/conversation.py`
+所有正式评测都应遵守：
 
-4. **检索测试入口存在**
-   - `/api/retrieval/query`、`/api/retrieval/references`（`app/routers/retriever.py`）
+1. `user_input` 由数据集提供。
+2. `actual_response`、`actual_contexts`、`actual_doc_ids` 必须由真实 RAG 链路运行得到。
+3. RAGAS 只负责对真实运行结果打分，不负责替代真实运行。
 
-### 2.2 当前缺口
+### 2.3 synthetic 的正确定位
 
-1. 无统一离线评测数据集（无法版本横向比较）。
-2. 无结构化评测结果存储（无法趋势分析）。
-3. 缺少标准检索排序指标（Recall@k/MRR/nDCG）。
-4. 运行时“LLM判断”与离线“基准评测”未解耦。
-5. 缺少发布门禁（CI/CD 质量阈值）。
+synthetic 数据集保留，但定位为：
 
----
+1. 冷启动评测。
+2. 长尾问题覆盖。
+3. 探索型实验。
+4. 失败模式探索。
+5. 链路 smoke test。
 
-## 3. 目标架构（双轨评估）
+synthetic 默认不直接承担：
 
-### 3.1 总体原则
-
-1. **在线评估保留**：现有 Graph 节点继续服务实时质量控制。
-2. **离线评估新增**：引入 RAGAS 批评测，作为版本治理标准。
-3. **统一结果中心**：所有评测产出落库，支持趋势与回归门禁。
-
-### 3.2 评测双轨
-
-1. **Track A（Online Guardrail）**
-   - 使用 `graph.py` 现有节点即时判断并驱动重试。
-   - 指标偏“控制逻辑”。
-
-2. **Track B（Offline Benchmark）**
-   - 对固定样本集批跑 RAGAS 指标与检索排序指标。
-   - 指标偏“质量基准与回归比较”。
+1. 正式 baseline。
+2. regression 门禁。
+3. 发布质量结论。
 
 ---
 
-## 4. 指标体系设计
-
-## 4.1 第一层：RAG 核心指标（首批必须）
-
-1. **Context Precision（检索精度）**
-2. **Context Recall（检索召回）**
-3. **Faithfulness（基于上下文的事实一致性）**
-4. **Answer Relevancy（回答相关性）**
-
-### 4.2 第二层：Agent/工具能力指标
-
-1. **Tool Call Accuracy**
-2. **Agent Goal Accuracy**
-3. （可选）Tool Call F1
-
-### 4.3 第三层：传统检索排序指标（必须补齐）
-
-1. Recall@k
-2. MRR@k
-3. nDCG@k
-
-### 4.4 第四层：工程与稳定性指标
-
-1. P50/P95 响应延迟
-2. 首 token 延迟（SSE）
-3. 单问答 token 消耗 / 费用估算
-4. 重写次数分布（rewrite_count）
-5. 生成重试次数分布（generate_count）
-6. 异常率（含 checkpoint 恢复率）
-
----
-
-## 5. 数据与结果模型（新增）
-
-## 5.1 新增表建议
-
-### 5.1.1 `eval_dataset`
-
-1. `id` (uuid, pk)
-2. `name` (varchar)
-3. `version` (varchar)
-4. `description` (text)
-5. `created_at`
-
-### 5.1.2 `eval_sample`
-
-1. `id` (uuid, pk)
-2. `dataset_id` (fk)
-3. `sample_type` (`single_turn` / `multi_turn_agent`)
-4. `user_input` (text)
-5. `reference_answer` (text, nullable)
-6. `reference_contexts` (json, nullable)
-7. `reference_tool_calls` (json, nullable)
-8. `metadata` (json)
-9. `created_at`
-
-### 5.1.3 `eval_run`
-
-1. `id` (uuid, pk)
-2. `dataset_id`
-3. `code_version` (commit sha / tag)
-4. `config_snapshot` (json)
-5. `status` (`running/success/failed`)
-6. `started_at`
-7. `finished_at`
-8. `trigger_source` (`manual/ci/nightly`)
-
-### 5.1.4 `eval_result_item`
-
-1. `id` (uuid, pk)
-2. `run_id`
-3. `sample_id`
-4. `question`
-5. `response`
-6. `retrieved_contexts` (json)
-7. `metric_scores` (json)
-8. `pass_fail` (bool, nullable)
-9. `error_message` (text, nullable)
-
-### 5.1.5 `eval_result_summary`
-
-1. `run_id` (pk/fk)
-2. `metric_avg` (json)
-3. `metric_p50` (json)
-4. `metric_p95` (json)
-5. `regression_vs_baseline` (json)
-6. `gate_passed` (bool)
-
----
-
-## 6. 分阶段实施方案
-
-## 6.1 P0（准备阶段）：评测基础能力打底
-
-### 目标
-
-建立最小可运行的离线评测链路，先跑通，再扩展。
-
-### 任务
-
-1. 依赖接入
-   - 在 `requirements.txt` 增加 `ragas`（建议锁定稳定版本）。
-2. 目录规划
-   - 新建 `app/evals/`：
-     - `dataset_builder.py`
-     - `ragas_runner.py`
-     - `metrics_registry.py`
-     - `reporter.py`
-3. 数据抽取器
-   - 从 `parent_docs` 构建测试样本：按文档带权随机抽样，再按父文档数量动态配额抽块。
-4. 建立首批黄金集
-   - 50~100 条高价值问答（覆盖 PDF/HTML/Markdown/代码文档场景）。
-5. 输出首份基线报告
-   - CSV + JSON：包含每条样本分数与总体均值。
-
-### 交付物
-
-1. 可执行脚本：`python -m app.evals.ragas_runner --dataset v1`
-2. 报告文件：`store/evals/experiments/<run_id>/`
-3. 首版阈值建议文档（初始无门禁，仅观测）。
-
-### 验收标准
-
-1. 评测任务可稳定跑完（成功率 > 95%）。
-2. 输出至少 4 个核心 RAG 指标。
-3. 可定位低分样本与对应上下文。
-
-### P0 严格执行步骤（按顺序）
-
-> 本节为当前项目的“标准 P0 操作流程”。  
-> 流程固定为：`parent_docs -> generate_with_chunks -> 用 retrieved_contexts 生成 response -> RAGAS 评测`。
-
-1. 安装依赖（包含 `ragas`）
-
-```bash
-pip install -r requirements.txt
-```
-
-2. 使用 `parent_docs` + `generate_with_chunks` 构建黄金集（不填 response）
-
-```bash
-python -m app.evals.build_golden_jsonl --size 200 --doc-limit 30 --recency-tau-days 100.0 --alloc-alpha 0.9 --output store/evals/datasets/v3.generated.jsonl
-```
-
-3. 基于黄金集生成“当次系统回答文件”（保留原黄金集文件不变）  
-   默认使用 `retrieved_contexts` 作为上下文（当前脚本默认值）。
-
-```bash
-python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v1.generated.jsonl
-```
-
-4. 运行 RAGAS 评测（输入第 3 步生成的 run 文件）
-
-```bash
-python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v1.generated.run_YYYYMMDD_HHMMSS.jsonl
-```
-
-5. 查看评测产物
-
-```text
-store/evals/experiments/<run_id>/
-  ├─ item_scores.csv
-  ├─ summary.json
-  └─ records.jsonl
-```
-
-### P0 脚本参数说明
-
-#### A. `app.evals.build_golden_jsonl`（黄金集构建）
-
-命令示例：
-
-```bash
-python -m app.evals.build_golden_jsonl --size 200 --doc-limit 30 --recency-tau-days 100.0 --alloc-alpha 0.9 --output store/evals/datasets/v3.generated.jsonl
-```
-
-参数：
-
-1. `--size`  
-   目标样本数。默认 `100`。
-
-2. `--output`  
-   输出 jsonl 路径。默认：`store/evals/datasets/v1.generated.jsonl`。
-
-3. `--doc-limit`  
-   参与构建的源文档数量上限。默认 `30`。
-
-4. `--seed`  
-   随机种子。默认 `42`（保证可复现）。
-
-5. `--recency-tau-days`  
-   文档时间衰减系数（天）。默认 `30.0`。控制“新文档优先”的强弱。
-
-   * 作用：控制“越新的文档权重越高”的强弱。
-
-   * 增大时：衰减更慢，老文档权重更接近新文档，**采样更均匀、更“全局”**。
-
-   * 减小时：衰减更快，新文档被抽中的概率显著提高，采样更偏近期。
-
-6. `--alloc-alpha`  
-   父文档块动态分配指数。默认 `0.7`。控制块预算向“大文档”倾斜程度。
-
-   - 作用：控制父文档块预算向“大文档（parent_docs 多）”倾斜的强度。
-   - 增大时：更偏向父块多的文档，头部文档拿到更多块，覆盖更集中。
-   - 减小时：分配更平滑，更多文档能分到块，覆盖更分散。
-
-7. `--use-light-model`  
-   开启后使用 `chat_model.light` 作为生成模型；默认使用 `chat_model.default`。
-
-8. `--fill-response-with-reference`  
-   开启后会把 `response` 直接填为 `reference`（用于快速打通，不建议作为正式评测输入）。
-
-作用：
-
-1. 基于 `parent_docs` 直接构建黄金集，不依赖 `chat_history`。
-2. 自动调用 RAGAS 的 `generate_with_chunks` 生成测试样本。
-3. 将结果标准化为当前项目可评测的 jsonl 格式。
-
-原理：
-
-1. 文档抽样：对 `embedded_document` 做“带权随机不放回采样”，时间越近权重越高（由 `recency_tau_days` 控制），最多抽 `doc-limit` 个。
-2. 动态配额：以 `size` 作为总块预算，按每个文档 `parent_doc_ids` 数量，以 `alloc_alpha` 做预算分配，多文档多取、少文档少取。
-3. 参与约束：参与构建的源文档保证至少抽到 1 个父文档块（在 `size` 足够时）。
-4. 块内抽样：每个选中文档内部再随机抽取父文档块，保持随机性和覆盖面。
-5. 样本生成：将抽到的父文档块作为 `chunks` 输入 `generate_with_chunks`，产出问题 `user_input`、参考答案 `reference` 和参考上下文 `retrieved_contexts`。
-
-#### B. `app.evals.fill_response_from_graph_prompt`（填充 response）
-
-命令示例：
-
-```bash
-python -m app.evals.fill_response_from_graph_prompt --input store/evals/datasets/v3.generated.jsonl
-```
-
-参数：
-
-1. `--input`  
-   输入黄金集 jsonl（必填）。
-2. `--output`  
-   输出 run 文件路径。默认自动生成到：`store/evals/datasets/runs/<input_stem>.run_<timestamp>.jsonl`。
-3. `--context-mode`  
-   上下文来源，支持：`retrieved` / `reference` / `both`。默认 `retrieved`（推荐）。
-4. `--qps`  
-   每秒请求数上限。默认 `10`。
-5. `--concurrency`  
-   最大并发 in-flight 请求数。默认 `10`。
-6. `--model`  
-   覆盖默认模型名；不传则使用 `chat_model.default`。
-7. `--skip-existing-response`  
-   开启后跳过已有非空 `response` 的样本。
-
-说明：
-
-1. 该脚本复用 `app/core/graph.py` 的 `GENERATE_ANSWER_PROMPT`。
-2. 该脚本不会走完整 LangGraph 流程；仅执行“拼 prompt + `llm.invoke`”。
-3. 输入黄金集文件不会被覆盖，输出为新 run 文件（符合“两份文件”策略）。
-
-作用：
-
-1. 为黄金集补齐“系统当次回答（response）”。
-2. 形成可用于回归评测的 run 文件，不污染原始黄金集。
-
-原理：
-
-1. 逐条读取 `user_input`，按 `context-mode` 选择上下文（默认 `retrieved_contexts`）。
-2. 套用 `GENERATE_ANSWER_PROMPT` 构造提示词，调用 `llm.invoke` 生成回答。
-3. 通过 `qps + concurrency` 做吞吐与并发控制，最终写入新 jsonl。
-
-#### C. `app.evals.ragas_runner`（离线评测）
-
-命令示例：
-
-```bash
-python -m app.evals.ragas_runner --source jsonl --dataset-path store/evals/datasets/runs/v3.generated.run_20260326_130202.jsonl
-```
-
-参数：
-
-1. `--dataset`  
-   数据集名称，默认 `v1`。当 `--dataset-path` 未给定时用于解析 `store/evals/datasets/<dataset>.jsonl`。
-2. `--dataset-path`  
-   直接指定 jsonl 文件路径。优先级高于 `--dataset`。
-3. `--source`  
-   数据来源：`auto` / `jsonl` / `history`。  
-   当前严格 P0 流程建议使用 `jsonl`。
-4. `--limit`  
-   当 `--source history` 时，最多抽样条数。默认 `100`。
-5. `--output-root`  
-   评测输出根目录。默认 `store/evals/experiments`。
-6. `--use-light-model`  
-   开启后使用 `chat_model.light` 作为生成模型；默认使用 `chat_model.default`。
-
-说明：
-
-1. P0 严格流程里推荐固定 `--source jsonl`，保证可复现。
-2. 报告中 `summary.json` 为均值汇总，`item_scores.csv` 为样本级分数。
-
-作用：
-
-1. 统一执行 RAGAS 离线评测并导出报告。
-2. 输出样本级和汇总级结果，支持后续回归对比。
-
-原理：
-
-1. 将 jsonl 转成 RAGAS `EvaluationDataset`（SingleTurnSample）。
-2. 自动装配单轮指标（如 faithfulness、answer_relevancy、context_precision、context_recall*）。
-3. 运行 `evaluate(...)` 计算样本分数，并对数值列聚合均值输出。  
-   注：`context_recall` 需要样本中存在 `reference`。
-
----
-
-## 6.2 P1（核心阶段）：标准指标 + 持久化 + 接口化
-
-### 目标
-
-把离线评测变成可追踪系统能力，而非临时脚本。
-
-### 任务
-
-1. 数据库存储
-   - 新增第 5 节数据表。
-2. API 接口
-   - 新增 `app/routers/evaluation.py`：
-     - `POST /api/evaluation/runs`：触发评测
-     - `GET /api/evaluation/runs/{id}`：查看 run 状态
-     - `GET /api/evaluation/runs/{id}/summary`
-     - `GET /api/evaluation/runs/{id}/items`
-3. 指标注册中心
-   - `metrics_registry.py` 支持按样本类型装配指标集合：
-     - `single_turn_metrics`
-     - `multi_turn_agent_metrics`
-4. 报告聚合器
-   - 产出 `eval_result_summary`，包含均值、分位数、失败样本 TopN。
-
-### 交付物
-
-1. 评测结果落库可追踪。
-2. API 可查每次评测详情。
-3. 支持比较两个 run 的指标差值（baseline vs current）。
-
-### 验收标准
-
-1. 任意一次 run 可完整回放到样本级别。
-2. 支持按数据集版本查看历史趋势。
-3. 支持导出报告（CSV/JSON）。
-
----
-
-## 6.3 P2（Agent阶段）：LangGraph 轨迹评测
-
-### 目标
-
-把 Agent 行为正确性纳入系统评估。
-
-### 任务
-
-1. 轨迹采集
-   - 在 `graph.stream(..., stream_mode=["custom","updates","messages"])` 基础上，保存消息轨迹快照。
-2. 轨迹转换
-   - 将 LangGraph/LangChain 消息转换为 RAGAS 多轮样本（`MultiTurnSample`）。
-3. Agent 指标接入
-   - Tool Call Accuracy
-   - Agent Goal Accuracy
-4. 失败归因
-   - 增加错误标签：
-     - 错误工具选择
-     - 工具参数错误
-     - 工具调用时机错误
-     - 目标未完成
-
-### 交付物
-
-1. 多轮 Agent 评测报告。
-2. Agent 失败样本库（可用于回归集扩充）。
-
-### 验收标准
-
-1. 多轮评测结果可落库并可检索。
-2. Tool/Goal 指标可稳定计算。
-
----
-
-## 6.4 P3（治理阶段）：CI 门禁 + 夜间巡检 + 迭代闭环
-
-### 目标
-
-形成工程化质量闭环。
-
-### 任务
-
-1. CI/CD 门禁
-   - PR 或发布前自动跑小样本回归集。
-   - 关键指标低于阈值则失败。
-2. 夜间全量评测
-   - 定时跑全量基准集，更新趋势。
-3. 阈值治理策略
-   - 采用“基线相对下降阈值 + 绝对最低阈值”双阈值。
-4. 自动生成改进建议
-   - 低分样本按问题类型聚类（检索不足、上下文污染、回答偏题等）。
-
-### 交付物
-
-1. CI 集成配置（如 GitHub Actions/Jenkins）。
-2. 每日评测报表。
-3. 指标告警机制（邮件/IM webhook）。
-
-### 验收标准
-
-1. 回归异常能在发布前被拦截。
-2. 指标波动可解释、可追溯。
-
----
-
-## 7. 代码改造清单（按模块）
-
-## 7.1 新增模块
-
-1. `app/evals/dataset_builder.py`
-   - 构建 `SingleTurnSample` / `MultiTurnSample`
-2. `app/evals/metrics_registry.py`
-   - 指标实例化与分组
+## 3. 当前已落地的脚本结构
+
+### 3.1 数据集构建层
+
+1. `app/evals/build_replay_dataset.py`
+   - 从 `chat_history` 与历史检索结果构建 replay 数据集。
+2. `app/evals/build_synthetic_dataset.py`
+   - 基于 RAGAS `TestsetGenerator` 从知识库父文档块生成 synthetic / exploration 数据集。
+3. `app/evals/import_seed_dataset.py`
+   - 导入人工整理、业务侧提供或外部系统导出的 seed 数据集。
+4. `app/evals/dataset_builder.py`
+   - 统一负责 schema 校验、保存数据集、导出审核表、回填审核结果、生成构建报告。
+5. `app/evals/schema.py`
+   - 定义 `EvalDatasetManifest`、`EvalSample`、`EvalRunRecord`。
+6. `app/evals/runtime.py`
+   - 提供按 profile 的最小化运行时初始化。
+
+### 3.2 真实执行与评分层
+
+1. `app/evals/live_rag_runner.py`
+   - 真实运行 Graph + Retriever，记录真实回答、真实上下文、真实命中文档和轨迹统计。
+2. `app/evals/ragas_scorer.py`
+   - 对真实 run 结果计算 RAGAS 指标、检索指标和 correctness。
 3. `app/evals/ragas_runner.py`
-   - 执行评测、异常重试、并发控制
-4. `app/evals/reporter.py`
-   - 持久化与报告导出
-5. `app/routers/evaluation.py`
-   - 评测 API
-6. `app/models/eval_schemas.py`
-   - 评测 ORM 表
-7. `app/crud/evaluation.py`
-   - 评测 CRUD
+   - 兼容入口，串联执行 `live_rag_runner` 与 `ragas_scorer`。
+4. `app/evals/retrieval_scorer.py`
+   - 负责传统检索指标。
+5. `app/evals/metrics_registry.py`
+   - 根据 `capabilities` 选择可用指标。
+6. `app/evals/reporter.py`
+   - 统一写入 run 产物。
 
-## 7.2 现有模块改造点
+### 3.3 兼容与退役入口
 
-1. `app/main.py`
-   - 注册 `evaluation` 路由。
-2. `app/models/common.py`
-   - 增加评测 VO/DTO。
-3. `app/routers/conversation.py`
-   - 可选：保存必要轨迹元信息，支持多轮评测构建。
-4. `requirements.txt`
-   - 增加 `ragas` 依赖。
+1. `app/evals/build_golden_jsonl.py`
+   - 已退化为 `build_synthetic_dataset` 的兼容入口。
+2. `app/evals/fill_response_from_graph_prompt.py`
+   - 已退役，不再用于真实评测链路。
 
 ---
 
-## 8. 运行流程设计
+## 4. 运行时初始化策略
 
-## 8.1 离线评测流程（单轮）
+当前 `runtime.py` 已经改为按 profile 初始化最小依赖，而不是所有脚本都初始化完整 Graph 运行时。
 
-1. 读取数据集样本。
-2. 调用现有检索/问答链路生成 `response` 与 `retrieved_contexts`。
-3. 组装 RAGAS `EvaluationDataset`。
-4. 计算核心指标。
-5. 落库样本结果与汇总结果。
-6. 输出报告文件。
+支持的 profile：
 
-## 8.2 离线评测流程（多轮 Agent）
+1. `dataset_seed`
+   - 仅初始化基础配置与数据库。
+2. `dataset_synthetic`
+   - 初始化基础配置、数据库、embedding、vector store、docstore。
+3. `dataset_replay`
+   - 在 `dataset_synthetic` 基础上增加 parent retriever。
+4. `full`
+   - 初始化完整 Graph / 检索 / rerank / checkpointer 运行时，供真实评测执行使用。
 
-1. 执行目标问题，捕获 LangGraph 消息轨迹。
-2. 转为多轮评测样本。
-3. 计算 Tool/Goal 类指标。
-4. 归因并落库。
+当前实现上的意义：
 
----
+1. 数据集构建脚本不再误初始化 Graph / checkpointer / 完整检索链路。
+2. 减少无关资源在异常时的清理干扰。
+3. 降低 Windows 下 async 资源清理带来的问题暴露面。
 
-## 9. 阈值与门禁策略（建议初始值）
-
-> 说明：以下阈值仅作为初始建议，需基于 P0 基线跑数后校准。
-
-1. Faithfulness >= 0.75
-2. Answer Relevancy >= 0.75
-3. Context Precision >= 0.65
-4. Context Recall >= 0.70
-5. Tool Call Accuracy >= 0.85（Agent集）
-6. Agent Goal Accuracy >= 0.80（Agent集）
-
-门禁策略：
-
-1. 任一关键指标低于“绝对阈值” -> fail。
-2. 相比 baseline 下降超过 5% -> fail。
-3. 新增高危失败样本数超过阈值 -> fail。
+另外，`runtime.py` 在 Windows 下会显式切换到 `WindowsSelectorEventLoopPolicy`，用于降低 `httpx / anyio / OpenAI async client` 在连接异常时触发 `Event loop is closed` 的概率。
 
 ---
 
-## 10. 数据集建设策略
+## 5. 数据集模型
 
-## 10.1 样本来源
+### 5.1 数据集分类
 
-1. 生产高频问题回放（脱敏后）。
-2. 典型失败案例沉淀。
-3. 新功能专项样本（如代码文档问答、跨段聚合问答）。
+当前方案使用以下分类：
 
-## 10.2 样本分层
+1. `regression`
+   - 小规模、稳定、强约束，用于回归和门禁。
+2. `baseline`
+   - 覆盖主业务场景，用于版本比较。
+3. `exploration`
+   - 用于探索边界、长尾、困难样本和 smoke test。
+4. `synthetic`
+   - 由 AI 自动生成，主要用于冷启动和覆盖补充。
+5. `specialized`
+   - 某个专项能力的数据集，例如拒答、多跳、代码文档问答等。
 
-1. L0：事实检索题（单跳）。
-2. L1：多段聚合题。
-3. L2：易混淆题（近义概念/相似实体）。
-4. L3：Agent 工具调用题。
+### 5.2 capabilities
 
-## 10.3 版本治理
+每个样本和数据集都由字段自动推导 `capabilities`，常见包括：
 
-1. 数据集采用 `name + version`。
-2. 每次扩样保留旧版本可回放。
-3. 回归集与探索集分离：
-   - 回归集：小而稳定，CI 必跑。
-   - 探索集：大而多样，夜间跑。
+1. `has_reference_answer`
+2. `has_reference_contexts`
+3. `has_reference_doc_ids`
+4. `has_rubric`
+5. `has_reference_tool_calls`
 
----
+### 5.3 样本最小字段
 
-## 11. 性能与成本控制
+每条样本至少应尽量具备：
 
-1. 评测并发限制（避免模型限流）。
-2. 缓存可复用评分（相同样本+相同响应可跳过）。
-3. 失败重试（指数退避，限定次数）。
-4. 大样本分批执行，支持断点续跑。
-5. 分层运行：
-   - PR：小样本 + 核心指标
-   - Nightly：全量 + 扩展指标
-
----
-
-## 12. 风险与应对
-
-1. **风险：评测抖动（LLM judge 非确定性）**
-   - 应对：固定模型、温度、随机种子；关键样本多次采样取均值。
-
-2. **风险：样本质量不足**
-   - 应对：先从生产失败样本构建高价值集；每周审查样本质量。
-
-3. **风险：评测耗时过长**
-   - 应对：分层数据集、分批并发、缓存。
-
-4. **风险：指标与业务目标脱节**
-   - 应对：增加业务 KPI 映射（命中率、人工反馈、工单解决率）。
+1. `sample_id`
+2. `user_input`
+3. `reference_answer`
+4. `reference_contexts`
+5. `reference_doc_ids`
+6. `scope_file_ids`
+7. `difficulty_level`
+8. `scenario_type`
+9. `source_type`
+10. `tags`
+11. `metadata`
 
 ---
 
-## 13. 里程碑计划（建议）
+## 6. 三种当前落地的数据集形态
 
-1. **第 1 周（P0）**
-   - 跑通离线评测脚本 + 50~100 样本基线。
-2. **第 2 周（P1）**
-   - 评测落库 + API + 汇总报告。
-3. **第 3 周（P2）**
-   - Agent 多轮评测 + Tool/Goal 指标。
-4. **第 4 周（P3）**
-   - CI 门禁 + 夜间任务 + 阈值治理。
+### 6.1 replay
+
+1. 来源于真实历史会话与历史检索结果。
+2. 最接近真实用户问题分布。
+3. 适合沉淀为 `baseline` 和 `regression`。
+
+### 6.2 synthetic
+
+1. 来源于知识库父文档块，经 RAGAS `TestsetGenerator` 自动生成。
+2. 构建成本最低，适合冷启动、探索集和 smoke test。
+3. 不应直接作为正式质量结论。
+
+### 6.3 seed import
+
+1. 来源于人工整理、业务侧提供、外部系统导出或已有题库文件。
+2. 最灵活，适合作为专项集、回归集初稿或历史沉淀数据导入入口。
+
+### 6.4 区别
+
+1. 问题真实性
+   - `replay` 最高。
+   - `seed import` 取决于输入来源。
+   - `synthetic` 最弱。
+2. 构建成本
+   - `synthetic` 最低。
+   - `seed import` 取决于已有数据质量。
+   - `replay` 依赖历史会话与检索记录。
+3. 参考答案可信度
+   - `replay` 中等，历史回答可能本身有误。
+   - `seed import` 取决于标注来源。
+   - `synthetic` 依赖 AI 生成，默认只作探索用途。
+4. 最适合用途
+   - `replay`：真实回放、baseline、regression 候选集。
+   - `synthetic`：smoke test、探索实验、冷启动覆盖。
+   - `seed import`：专项集、人工题库接入、外部样本迁移。
 
 ---
 
-## 14. 最小实施清单（可直接执行）
+## 7. 当前三种数据集构建方式
 
-1. 在 `requirements.txt` 添加 `ragas`。
-2. 新建 `app/evals/` 四个核心文件：`dataset_builder.py / metrics_registry.py / ragas_runner.py / reporter.py`。
-3. 完成单轮四指标评测并导出报告。
-4. 新增评测 ORM 表与 `evaluation` 路由。
-5. 在 CI 增加“回归集评测”步骤并配置阈值。
+### 7.1 replay 数据集
+
+入口：`app/evals/build_replay_dataset.py`
+
+当前逻辑：
+
+1. 从 `chat_history` 中提取 `user -> ai` 对。
+2. 使用历史 `parent_doc_ids` 回溯对应父文档块。
+3. 生成 `reference_contexts`、`reference_doc_ids`、`scope_file_ids`。
+4. `reference_answer` 默认使用历史回答。
+5. 也可用 `--reference-mode ai` 让模型基于上下文重写候选参考答案。
+6. 当启用 `--reference-mode ai` 时，支持 LLM 重试与退避。
+
+当前状态：
+
+1. replay 链路不存在 synthetic 那种 `reference_doc_ids` 全空的问题。
+2. 已补充 `metadata.reference_file_ids`、`metadata.source_file_count` 和构建报告。
+3. replay 数据集仍然需要人工审核，因为历史回答可能本身就有错误。
+4. `--limit` 的语义是“最多抽多少条”，不是“必须交付多少条”，因此不存在 synthetic 那种 top-up 问题。
+
+### 7.2 synthetic 数据集
+
+入口：`app/evals/build_synthetic_dataset.py`
+
+当前逻辑：
+
+1. 随机选择参与构建的文件。
+2. 文件选择权重同时考虑文档新旧和父文档块数量。
+3. 按文件的父文档块数量动态分配样本预算，父块越多，分到的 quota 越多。
+4. 只要文件参与构建，就至少保证 1 个父文档块进入生成流程。
+5. 根据 `reference_contexts` 回填 `reference_doc_ids`，保证样本可追溯。
+6. 记录每个文件的父块数、quota、chunk 字符长度统计和分批决策。
+
+#### 7.2.1 动态 batch 控制
+
+为了降低大文件在 `Generating Scenarios` 阶段的失败概率，synthetic 构建加入了动态 batch 控制：
+
+1. 每个文件统计本次被抽中父块的 `avg_chunk_chars`、`max_chunk_chars`、`total_chunk_chars`。
+2. 对同一 `quota` 的文件，系统以“能正常处理的较轻文件”的平均 chunk 体量作为安全参考。
+3. 如果当前文件的平均 chunk 体量明显更大，则自动缩小该文件的实际 `effective_chunk_limit`。
+4. 该缩小只影响“每次提交给 RAGAS 的父块数量”，不会截断父文档块内容。
+5. 最终采用的 batch 上限会写入 `generation_plan.effective_chunk_limits`。
+
+#### 7.2.2 synthetic 的 `--size` 语义
+
+当前 `--size` 表示“目标样本数”，而不是简单的首轮预算：
+
+1. 首轮生成后，如果样本数不足 `--size`，会自动进入 top-up。
+2. top-up 会按各文件原始 `quota` 比例继续抽取新的父文档块。
+3. top-up 优先使用当前文件尚未使用过的父块；如果父块不足，才回退到已有父块池。
+4. 若经过多轮 top-up 后仍未达到目标样本数，脚本不会报错退出。
+5. 会保留已完成的数据集，并在 metadata 与日志中记录欠交数量。
+
+#### 7.2.3 synthetic 的当前状态
+
+1. 解决了 `reference_doc_ids` 为空的问题。
+2. 解决了参与构建文件没有实际样本覆盖的问题。
+3. 降低了大文件在 `Generating Scenarios` 阶段因单批上下文过重导致的失败概率。
+4. 将 `--size` 从“预算目标”提升为“尽量交付的目标样本数”，并支持按比例 top-up。
+5. 即使最终样本数低于目标值，也会保留已完成数据集并给出明确告警。
+
+#### 7.2.4 边界说明
+
+1. 这套逻辑主要解决“文件覆盖”“样本追溯”“大文件批次稳定性”和“样本数不足自动补齐”问题。
+2. 它不会自动产生真正的跨文件多跳样本。
+3. 如果需要多文件问题，后续应单独设计 `specialized` multi-hop 数据集生成器。
+
+### 7.3 seed 数据集导入
+
+入口：`app/evals/import_seed_dataset.py`
+
+当前逻辑：
+
+1. 导入 `.json` 或 `.jsonl` 外部样本。
+2. 标准化为统一 schema。
+3. 若输入缺少 `scope_file_ids` 但提供了 `reference_doc_ids`，会尝试自动根据父块反推 `scope_file_ids`。
+4. 若显式传入 `--default-scope all`，则会为缺少范围的样本填充全库范围。
+
+当前状态：
+
+1. 不存在 synthetic 的配额和 top-up 问题，因为它不负责生成样本，只负责导入样本。
+2. 当前版本已支持自动反推 `scope_file_ids`，并在 `metadata` 中记录是否进行了推断。
+
+### 7.4 seed 导入格式要求
+
+`import_seed_dataset.py` 支持输入 `.json` 或 `.jsonl`。
+
+支持的顶层格式：
+
+1. `jsonl`
+   - 每行一个样本对象。
+2. `json`
+   - 顶层是样本数组；或
+   - 顶层是对象，且包含 `samples` 数组字段。
+
+每条 seed 样本建议字段：
+
+1. `user_input`
+   - 推荐必填。
+   - 也兼容 `question`。
+2. `sample_id`
+   - 可选。
+   - 也兼容 `id`。
+3. `reference_answer`
+   - 推荐填写。
+   - 也兼容 `reference`。
+4. `reference_contexts`
+   - 可选，字符串数组。
+5. `reference_doc_ids`
+   - 可选，字符串数组。
+6. `scope_file_ids`
+   - 可选，字符串数组。
+7. `difficulty_level`
+   - 可选。
+8. `scenario_type`
+   - 可选。
+9. `source_type`
+   - 可选。
+10. `tags`
+   - 可选，字符串数组。
+11. `review_status`
+   - 可选，默认 `pending`。
+12. `review_notes`
+   - 可选。
+13. `metadata`
+   - 可选，对象。
+14. `rubric`
+   - 可选，对象。
+15. `reference_tool_calls`
+   - 可选，数组。
+
+最小可用示例：
+
+```json
+[
+  {
+    "user_input": "什么是父文档检索？",
+    "reference_answer": "父文档检索是先检索子块，再回溯父块作为回答上下文的策略。"
+  }
+]
+```
+
+推荐完整示例：
+
+```json
+[
+  {
+    "sample_id": "seed-001",
+    "user_input": "什么是父文档检索？",
+    "reference_answer": "父文档检索是先检索子块，再回溯父块作为回答上下文的策略。",
+    "reference_contexts": [
+      "父文档检索通常先对更细粒度的子块做向量召回，再映射回父块。"
+    ],
+    "reference_doc_ids": ["parent-doc-id-1"],
+    "scope_file_ids": ["file-id-1"],
+    "difficulty_level": "L0",
+    "scenario_type": "definition",
+    "source_type": "manual",
+    "tags": ["baseline", "retrieval"],
+    "metadata": {
+      "owner": "eval-team"
+    }
+  }
+]
+```
+
+导入时自动补全行为：
+
+1. 若样本缺少 `scope_file_ids` 但提供了 `reference_doc_ids`，系统会尝试自动反推 `scope_file_ids`。
+2. 若样本同时缺少 `scope_file_ids` 且命令传入 `--default-scope all`，则会补成全库范围。
+3. 若样本缺少 `difficulty_level` 或 `scenario_type`，会使用命令行默认值补齐。
+4. 若样本缺少 `tags`，会自动补为 `[category, source_type]`。
 
 ---
 
-## 15. 与当前项目的对应关系总结
+## 8. 构建报告与产物
 
-1. 现有 `graph.py` 的相关性/幻觉/有用性节点继续保留，不替代。
-2. 新增 RAGAS 离线评测作为“质量基线层”。
-3. 复用 `chat_history.parent_doc_ids` 与文档库，减少采集成本。
-4. 以“分阶段”推进，先可用再完备，避免一次性大改导致风险扩大。
+### 8.1 数据集产物
+
+1. `manifest.json`
+   - 数据集名称、版本、类别、来源、capabilities、审核要求、构建元数据。
+2. `samples.jsonl`
+   - 标准化 `EvalSample` 列表。
+3. `review_sheet.csv`
+   - 人工审核表。
+4. `review_guide.md`
+   - 审核说明。
+
+### 8.2 统一构建报告
+
+三种数据集构建脚本在完成构建后，都会打印统一格式的构建报告。报告由 `dataset_builder.format_build_report(...)` 生成，主要包含：
+
+1. 数据集名称、版本、分类、来源。
+2. 样本总数。
+3. `reference_answer` 覆盖率。
+4. `reference_contexts` 覆盖率。
+5. `reference_doc_ids` 覆盖率。
+6. `scope_file_ids` 覆盖率。
+7. 唯一 `scope_file_ids` 数量。
+8. 唯一 `reference_doc_ids` 数量。
+9. `review_status` 分布。
+10. 场景标签、难度标签分布。
+11. 文件覆盖 Top N。
+
+对于 synthetic 数据集，`manifest.metadata.generation_plan` 还会额外记录：
+
+1. `requested_sample_count` 与 `actual_sample_count`。
+2. `undershot_sample_count`。
+3. 每个文件的 `doc_allocations`。
+4. 每个文件的 `doc_avg_chunk_chars` / `doc_max_chunk_chars`。
+5. 每个文件最终采用的 `effective_chunk_limits`。
+6. 动态 batch 决策明细 `dynamic_batch_decisions`。
 
 ---
 
-## 16. 参考资料
+## 9. 人工审核策略
 
-1. RAGAS 官方文档：https://docs.ragas.io/
-2. RAGAS 指标（RAG）：Context Precision / Context Recall / Faithfulness / Response Relevancy
-3. RAGAS LangGraph 集成（Agent 指标）：Tool Call Accuracy / Agent Goal Accuracy
-4. RAGAS 迁移说明（v0.3 -> v0.4）
-5. RAGAS 论文（EACL 2024 Demo）
+### 9.1 哪些数据集必须人工审核
+
+正式使用前必须人工审核的数据集：
+
+1. `regression`
+2. `baseline`
+3. `specialized`
+4. `replay`
+5. 准备升格为正式基线的 `synthetic`
+
+可以先自动构建、后抽检的数据集：
+
+1. `exploration`
+2. 普通 `synthetic`
+
+### 9.2 审核重点
+
+1. `user_input` 是否真实、清晰、无歧义。
+2. `reference_answer` 是否正确。
+3. `reference_contexts` / `reference_doc_ids` 是否真的支撑答案。
+4. `scope_file_ids` 是否合理。
+5. 标签是否正确，例如 `difficulty_level`、`scenario_type`、`tags`。
+
+建议采用：`AI 初稿 + 人工复核`。
+
+审核细则见：[Evals数据集审核说明](./Evals数据集审核说明.md)
+
+---
+
+## 10. 真实测评链路
+
+真实测评流程：
+
+1. 从数据集读取样本。
+2. `live_rag_runner.py` 逐条调用真实 Graph + Retriever。
+3. 记录真实 `actual_response`、`actual_contexts`、`actual_doc_ids`、`actual_file_ids`、耗时和轨迹统计。
+4. `ragas_scorer.py` 根据样本 capabilities 自动选择可计算指标。
+5. 输出样本级结果和实验级汇总。
+
+当前 runner 约束：
+
+1. 可按 `review_status` 过滤样本。
+2. 可限制执行样本数做 smoke test。
+3. 同一 runner 支持 replay、synthetic、seed 等多种来源的数据集。
+
+---
+
+## 11. 指标体系
+
+### 11.1 检索层指标
+
+在样本具备 `reference_doc_ids` 时，优先计算：
+
+1. `Recall@k`
+2. `Precision@k`
+3. `Hit@k`
+4. `MRR@k`
+5. `nDCG@k`
+
+### 11.2 RAGAS 指标
+
+在样本具备相应能力时，按需启用：
+
+1. `faithfulness`
+2. `answer_relevancy`
+3. `context_precision`
+4. `context_recall`
+
+### 11.3 回答正确性
+
+当前实现中，`ragas_scorer.py` 还会基于 LLM judge 计算 correctness。
+
+### 11.4 后续可扩展指标
+
+1. 拒答正确率。
+2. 抗噪能力指标。
+3. rubric-based 业务评分。
+4. Agent 工具调用准确率。
+
+---
+
+## 12. 当前可用命令
+
+### 12.1 构建 replay 数据集
+
+```bash
+python -m app.evals.build_replay_dataset --name replay_baseline --version v1 --category baseline
+```
+
+参数说明：
+
+1. `--name`：必填，数据集名称。
+2. `--version`：必填，数据集版本。
+3. `--category`：可选，`regression`、`baseline`、`exploration`、`specialized`。
+4. `--limit`：可选，最大样本数。
+5. `--seed`：可选，抽样随机种子。
+6. `--reference-mode`：可选，`history` 或 `ai`。
+7. `--difficulty`：可选，默认难度标签。
+8. `--scenario`：可选，默认场景标签。
+9. `--description`：可选，数据集描述。
+10. `--output-dir`：可选，显式输出目录。
+11. `--llm-retries`：可选，AI 生成参考答案时的重试次数。
+12. `--retry-backoff-seconds`：可选，AI 参考答案生成的退避秒数。
+
+### 12.2 构建 synthetic 数据集
+
+```bash
+python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
+```
+
+参数说明：
+
+1. `--name`：必填，数据集名称。
+2. `--version`：必填，数据集版本。
+3. `--category`：可选，`synthetic`、`exploration`、`specialized`。
+4. `--size`：可选，目标样本数；若首轮不足，会自动进入 top-up。
+5. `--doc-limit`：可选，参与构建的文件上限。
+6. `--seed`：可选，随机种子。
+7. `--recency-tau-days`：可选，文档时间衰减参数。
+8. `--alloc-alpha`：可选，父块预算分配指数。
+9. `--use-light-model`：可选，使用轻量模型。
+10. `--difficulty`：可选，默认难度标签。
+11. `--scenario`：可选，默认场景标签。
+12. `--description`：可选，数据集描述。
+13. `--output-dir`：可选，显式输出目录。
+14. `--max-batch-retries`：可选，每个 synthetic 子批次的最大重试次数。
+15. `--retry-backoff-seconds`：可选，子批次重试的退避秒数。
+16. `--max-chunks-per-batch`：可选，默认的每批父块上限；实际执行时会按文件 chunk 体量动态缩小。
+17. `--max-topup-rounds`：可选，样本不足时允许进行的 top-up 轮数。
+
+补充说明：
+
+1. synthetic smoke test 默认允许首轮不足后继续 top-up。
+2. 若某些大文件的父块平均内容明显更重，脚本会自动缩小这些文件的实际 batch 大小，无需手动截断父块内容。
+3. 若最终样本数仍低于 `--size`，脚本会保留已完成的数据集，并在 `manifest.json` 中记录欠交数量。
+
+### 12.3 导入 seed 数据集
+
+```bash
+python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --version v1 --category exploration --source-type manual --default-scope all
+```
+
+参数说明：
+
+1. `--input`：必填，输入 `.json` 或 `.jsonl` 文件。
+2. `--name`：必填，数据集名称。
+3. `--version`：必填，数据集版本。
+4. `--category`：可选，`regression`、`baseline`、`exploration`、`specialized`、`synthetic`。
+5. `--source-type`：可选，来源标签。
+6. `--default-difficulty`：可选，默认难度标签。
+7. `--default-scenario`：可选，默认场景标签。
+8. `--default-scope`：可选，`none` 或 `all`。
+9. `--description`：可选，数据集描述。
+10. `--output-dir`：可选，显式输出目录。
+
+### 12.4 导出和回填审核表
+
+导出：
+
+```bash
+python -m app.evals.dataset_builder export-review --dataset-dir <dataset_dir>
+```
+
+回填：
+
+```bash
+python -m app.evals.dataset_builder apply-review --dataset-dir <dataset_dir> --review-file <dataset_dir>/review_sheet.csv
+```
+
+### 12.5 真实运行与评分
+
+真实执行：
+
+```bash
+python -m app.evals.live_rag_runner --dataset-dir <dataset_dir> --review-status approved
+```
+
+评分：
+
+```bash
+python -m app.evals.ragas_scorer --run-dir <run_dir>
+```
+
+兼容串联入口：
+
+```bash
+python -m app.evals.ragas_runner --dataset-dir <dataset_dir> --review-status approved
+```
+
+---
+
+## 13. 推荐命令组合
+
+### 13.1 最低人工成本的 smoke test
+
+```bash
+python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --limit 10 --review-status pending,approved
+```
+
+适用场景：
+
+1. 先验证整条链路能否跑通。
+2. 不急于得出正式质量结论。
+
+### 13.2 更接近真实问题分布的 quick check
+
+```bash
+python -m app.evals.build_replay_dataset --name replay_quickcheck --version v1 --category exploration --limit 30 --reference-mode ai
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/replay_quickcheck/v1 --limit 10 --review-status pending,approved
+```
+
+适用场景：
+
+1. 先用真实历史问题验证评测链路。
+2. 后续再把高质量样本筛进 `baseline` 或 `regression`。
+
+### 13.3 已有外部样本的快速接入
+
+```bash
+python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --version v1 --category exploration --source-type manual --default-scope all
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/seed_smoke/v1 --limit 10 --review-status pending,approved
+```
+
+适用场景：
+
+1. 你手里已经有一批问题。
+2. 想先把它们纳入统一评测框架。
+
+---
+
+## 14. 后续阶段路线图
+
+### 14.1 Phase 2
+
+1. 引入更稳定的数据集治理流程。
+2. 沉淀失败样本为 `regression`。
+3. 为高价值样本补齐 `reference_doc_ids` 和 `reference_contexts`。
+4. 增加专项实验集与更细的报表。
+
+### 14.2 Phase 3
+
+1. 扩展到 Agent 真实轨迹评测。
+2. 评估工具调用与多轮链路。
+
+### 14.3 Phase 4
+
+1. 将小规模 `regression` 集接入 CI 门禁。
+2. 为 `baseline` 建立版本对照和阈值管理。
+
+---
+
+## 15. 参考资料
+
+1. [RAGAS Evaluate and Improve a RAG App](https://docs.ragas.io/en/stable/howtos/applications/evaluate-and-improve-rag/)
+2. [RAGAS Metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/)
+3. [RAGAS TestsetGenerator](https://docs.ragas.io/en/stable/references/generate/)
