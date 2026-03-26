@@ -44,8 +44,11 @@ chat:
   max_generate_time: 3
   conversation_summarize_threshold: 10
 
-graph:
-  visualization: true
-
 # 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter
 text_file_length_threshold: 1500
+
+debug:
+  enabled: true
+  docling_front: true
+  trafilatura_front: true
+  graph_visualization: false
