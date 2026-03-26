@@ -3,7 +3,6 @@ config:
   flowchart:
     curve: linear
 ---
-```mermaid
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	init_graph_state(init_graph_state)
@@ -32,7 +31,3 @@ graph TD;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
-```
-
-
-

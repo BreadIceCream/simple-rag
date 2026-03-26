@@ -11,7 +11,7 @@
 
 当前方案的核心结论：
 
-1. 旧的 `build_golden_jsonl.py -> fill_response_from_graph_prompt.py -> ragas_runner.py` 不能代表真实 RAG 能力。
+1. 旧的“合成黄金集 + prompt-only 填答”评测方式不能代表真实 RAG 能力。
 2. 主评测链路必须是：`数据集构建 -> 人工审核（按需） -> 真实 RAG 执行 -> RAGAS/检索指标评分 -> 结果分析`。
 3. synthetic 数据集只适合作为冷启动、探索和 smoke test，不直接代表真实线上能力。
 
@@ -83,13 +83,6 @@ synthetic 默认不直接承担：
    - 根据 `capabilities` 选择可用指标。
 6. `app/evals/reporter.py`
    - 统一写入 run 产物。
-
-### 3.3 兼容与退役入口
-
-1. `app/evals/build_golden_jsonl.py`
-   - 已退化为 `build_synthetic_dataset` 的兼容入口。
-2. `app/evals/fill_response_from_graph_prompt.py`
-   - 已退役，不再用于真实评测链路。
 
 ---
 
@@ -505,58 +498,89 @@ synthetic 默认不直接承担：
 
 ## 12. 当前可用命令
 
+本节只记录当前已经落地并可直接执行的命令。每条命令都按“用途、参数、说明”的方式描述，避免文档和脚本实现脱节。
+
 ### 12.1 构建 replay 数据集
 
 ```bash
 python -m app.evals.build_replay_dataset --name replay_baseline --version v1 --category baseline
 ```
 
+作用说明：
+
+1. 从 `chat_history` 和已有历史数据中抽取真实用户问题，构建 replay 数据集。
+2. 适合做 quick check、baseline 初版、失败样本回放。
+3. 若 `--reference-mode ai`，脚本会调用 LLM 为样本补候选 `reference_answer`。
+
 参数说明：
 
 1. `--name`：必填，数据集名称。
 2. `--version`：必填，数据集版本。
-3. `--category`：可选，`regression`、`baseline`、`exploration`、`specialized`。
-4. `--limit`：可选，最大样本数。
-5. `--seed`：可选，抽样随机种子。
+3. `--category`：可选，数据集类别，支持 `regression`、`baseline`、`exploration`、`specialized`。
+4. `--limit`：可选，最多抽取多少条样本；这是上限，不保证一定输出到这个数量。
+5. `--seed`：可选，随机种子，用于保证抽样可复现。
 6. `--reference-mode`：可选，`history` 或 `ai`。
-7. `--difficulty`：可选，默认难度标签。
-8. `--scenario`：可选，默认场景标签。
-9. `--description`：可选，数据集描述。
-10. `--output-dir`：可选，显式输出目录。
-11. `--llm-retries`：可选，AI 生成参考答案时的重试次数。
-12. `--retry-backoff-seconds`：可选，AI 参考答案生成的退避秒数。
+7. `--difficulty`：可选，写入样本的默认难度标签。
+8. `--scenario`：可选，写入样本的默认场景标签。
+9. `--description`：可选，数据集说明文字，写入 `manifest.json`。
+10. `--output-dir`：可选，显式指定输出目录；不传则按标准目录保存。
+11. `--llm-retries`：可选，仅在 `--reference-mode ai` 时生效，表示 AI 生成参考答案的最大重试次数。
+12. `--retry-backoff-seconds`：可选，仅在 `--reference-mode ai` 时生效，表示每次重试的基础退避秒数。
+
+补充说明：
+
+1. `--reference-mode history` 更快，但历史答案本身可能有误，更适合快速回放。
+2. `--reference-mode ai` 更适合冷启动补齐 `reference_answer`，但仍建议对高价值样本做人审。
+3. 构建完成后会输出统一构建报告，并生成 `manifest.json`、`samples.jsonl`、`review_sheet.csv`、`review_guide.md`。
 
 ### 12.2 构建 synthetic 数据集
 
 ```bash
-python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
+python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model --max-batch-retries 5 --retry-backoff-seconds 3 --ragas-max-workers 1 --ragas-timeout 240 --ragas-max-retries 8 --ragas-max-wait 30 --llm-timeout 240 --llm-max-retries 6 --llm-requests-per-second 0.5
 ```
+
+作用说明：
+
+1. 从知识库父文档块自动生成 synthetic / exploration 数据集。
+2. 适合做 smoke test、冷启动评测、长尾探索和链路联调。
+3. 不建议直接把未审核 synthetic 数据集当作正式 baseline 或 regression 门禁集。
 
 参数说明：
 
 1. `--name`：必填，数据集名称。
 2. `--version`：必填，数据集版本。
-3. `--category`：可选，`synthetic`、`exploration`、`specialized`。
-4. `--size`：可选，目标样本数；若首轮不足，会自动进入 top-up。
-5. `--doc-limit`：可选，参与构建的文件上限。
+3. `--category`：可选，数据集类别，支持 `synthetic`、`exploration`、`specialized`。
+4. `--size`：可选，目标样本数；首轮不足时会自动 top-up。
+5. `--doc-limit`：可选，参与构建的源文件数量上限。
 6. `--seed`：可选，随机种子。
-7. `--recency-tau-days`：可选，文档时间衰减参数。
-8. `--alloc-alpha`：可选，父块预算分配指数。
-9. `--use-light-model`：可选，使用轻量模型。
-10. `--difficulty`：可选，默认难度标签。
-11. `--scenario`：可选，默认场景标签。
-12. `--description`：可选，数据集描述。
-13. `--output-dir`：可选，显式输出目录。
+7. `--recency-tau-days`：可选，文档新旧权重的时间衰减参数。
+8. `--alloc-alpha`：可选，父文档块预算按文件分配时使用的指数参数。
+9. `--use-light-model`：可选，使用轻量模型而不是默认模型生成 synthetic 样本。
+10. `--difficulty`：可选，写入样本的默认难度标签。
+11. `--scenario`：可选，写入样本的默认场景标签。
+12. `--description`：可选，数据集说明文字。
+13. `--output-dir`：可选，显式指定输出目录。
 14. `--max-batch-retries`：可选，每个 synthetic 子批次的最大重试次数。
-15. `--retry-backoff-seconds`：可选，子批次重试的退避秒数。
-16. `--max-chunks-per-batch`：可选，默认的每批父块上限；实际执行时会按文件 chunk 体量动态缩小。
+15. `--retry-backoff-seconds`：可选，子批次失败后的基础退避秒数。
+16. `--max-chunks-per-batch`：可选，单批父块硬上限；`0` 表示不设置固定上限，仅在重文件上按字符预算动态拆分。
 17. `--max-topup-rounds`：可选，样本不足时允许进行的 top-up 轮数。
+18. `--ragas-max-workers`：可选，传给 RAGAS `RunConfig` 的最大并发 worker 数。
+19. `--ragas-timeout`：可选，传给 RAGAS `RunConfig` 的单次操作超时秒数。
+20. `--ragas-max-retries`：可选，传给 RAGAS `RunConfig` 的最大重试次数。
+21. `--ragas-max-wait`：可选，传给 RAGAS `RunConfig` 的最大退避秒数。
+22. `--llm-timeout`：可选，传给 `init_chat_model` 的请求超时秒数。
+23. `--llm-max-retries`：可选，传给 `init_chat_model` 的最大重试次数。
+24. `--llm-requests-per-second`：可选，synthetic 生成时 LLM 调用的每秒请求上限。
 
 补充说明：
 
-1. synthetic smoke test 默认允许首轮不足后继续 top-up。
-2. 若某些大文件的父块平均内容明显更重，脚本会自动缩小这些文件的实际 batch 大小，无需手动截断父块内容。
-3. 若最终样本数仍低于 `--size`，脚本会保留已完成的数据集，并在 `manifest.json` 中记录欠交数量。
+1. 文件选择和 quota 分配是随机但可复现的，受 `--seed` 控制。
+2. 文件的 quota 会按父文档块数量动态分配，且每个参与文件至少会有 1 个父块进入生成流程。
+3. 正常文件保持原始 quota；只有内容明显更重的文件才会被动态缩小 batch。
+4. synthetic 生成会同时使用低并发 `RunConfig`、底层 LLM `timeout/max_retries` 和 `rate_limiter` 来降低 `Generating Scenarios` 阶段的连接压力。
+5. 若某个 batch 在多次重试后仍然出现连接类异常，脚本会自动将该 batch 二分成更小批次继续执行。
+6. 若经过多轮 top-up 后仍然达不到 `--size`，脚本会保留已完成的数据集，并在 `manifest.json` 中记录 `undershot_sample_count`。
+7. 构建报告会额外记录 `generation_plan`、`effective_chunk_limits`、`dynamic_batch_decisions` 等 synthetic 特有信息。
 
 ### 12.3 导入 seed 数据集
 
@@ -564,46 +588,115 @@ python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 
 python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --version v1 --category exploration --source-type manual --default-scope all
 ```
 
+作用说明：
+
+1. 把已有的人工样本、业务侧样本或外部系统导出的题集导入为统一数据集格式。
+2. 适合快速接入手头已有的问答集，不需要重新构建 synthetic 或 replay。
+
 参数说明：
 
-1. `--input`：必填，输入 `.json` 或 `.jsonl` 文件。
+1. `--input`：必填，输入 `.json` 或 `.jsonl` 文件路径。
 2. `--name`：必填，数据集名称。
 3. `--version`：必填，数据集版本。
-4. `--category`：可选，`regression`、`baseline`、`exploration`、`specialized`、`synthetic`。
-5. `--source-type`：可选，来源标签。
-6. `--default-difficulty`：可选，默认难度标签。
-7. `--default-scenario`：可选，默认场景标签。
-8. `--default-scope`：可选，`none` 或 `all`。
-9. `--description`：可选，数据集描述。
-10. `--output-dir`：可选，显式输出目录。
+4. `--category`：可选，数据集类别，支持 `regression`、`baseline`、`exploration`、`specialized`、`synthetic`。
+5. `--source-type`：可选，样本来源标签，例如 `manual`、`business`、`imported`。
+6. `--default-difficulty`：可选，当输入样本缺少难度字段时使用的默认值。
+7. `--default-scenario`：可选，当输入样本缺少场景字段时使用的默认值。
+8. `--default-scope`：可选，`none` 或 `all`；用于在输入缺少 `scope_file_ids` 时填充默认范围。
+9. `--description`：可选，数据集说明文字。
+10. `--output-dir`：可选，显式指定输出目录。
+
+补充说明：
+
+1. seed 导入不会生成新问题，只做格式标准化和字段补全。
+2. 若输入里有 `reference_doc_ids`，脚本会尝试自动反推 `scope_file_ids`。
+3. 适合作为 baseline、regression 的正式入口之一，因为它最容易接入人工审核后的高质量样本。
 
 ### 12.4 导出和回填审核表
 
-导出：
+**导出审核表：**
 
 ```bash
 python -m app.evals.dataset_builder export-review --dataset-dir <dataset_dir>
 ```
 
-回填：
+参数说明：
+
+1. `export-review`：子命令，表示导出审核表。
+2. `--dataset-dir`：必填，数据集目录，目录内应包含 `manifest.json` 和 `samples.jsonl`。
+
+作用说明：
+
+1. 根据当前数据集生成可人工编辑的 `review_sheet.csv`。
+2. 同时生成 `review_guide.md`，用于说明审核字段和审核规则。
+
+
+
+**回填审核结果：**
 
 ```bash
 python -m app.evals.dataset_builder apply-review --dataset-dir <dataset_dir> --review-file <dataset_dir>/review_sheet.csv
 ```
 
-### 12.5 真实运行与评分
+参数说明：
 
-真实执行：
+1. `apply-review`：子命令，表示把审核结果写回数据集。
+2. `--dataset-dir`：必填，目标数据集目录。
+3. `--review-file`：必填，审核后的 `review_sheet.csv` 路径。
+
+作用说明：
+
+1. 把人工审核后的 `review_status`、审核备注以及相关修正字段同步回数据集样本。
+2. 回填后，后续 runner 可以按 `approved`、`pending` 等状态筛选样本。
+3. 如果只是先跑通链路，可以先跳过这一步，直接允许 `pending` 样本参与测评。
+
+### 12.5 执行真实 RAG 与评分
+
+**执行真实 RAG：**
 
 ```bash
 python -m app.evals.live_rag_runner --dataset-dir <dataset_dir> --review-status approved
 ```
 
-评分：
+作用说明：
+
+1. 对数据集中的 `user_input` 逐条调用真实 RAG 系统。
+2. 保存真实检索结果、真实回答、运行状态、耗时和其他 run 级记录。
+3. 这一步不会做评分，只负责真实执行。
+
+参数说明：
+
+1. `--dataset-dir`：必填，数据集目录，目录内应包含 `manifest.json` 和 `samples.jsonl`。
+2. `--output-root`：可选，实验输出根目录；不传则使用默认 run 输出路径。
+3. `--limit`：可选，本次最多执行多少条样本，适合做 smoke test。
+4. `--review-status`：可选，允许执行的审核状态列表，逗号分隔；默认是 `approved,pending`。
+
+产物说明：
+
+1. 生成一个新的 run 目录。
+2. run 目录中至少包含真实执行记录，例如 `records.jsonl`、`dataset_manifest.json` 等文件。
+
+
+
+**RAGAS 与检索评分：**
 
 ```bash
 python -m app.evals.ragas_scorer --run-dir <run_dir>
 ```
+
+作用说明：
+
+1. 对 `live_rag_runner` 产生的真实 run 记录做评分。
+2. 计算 RAGAS 指标、检索指标以及汇总结果。
+
+参数说明：
+
+1. `--run-dir`：必填，run 目录，目录内应包含 `records.jsonl` 和 `dataset_manifest.json`。
+
+产物说明：
+
+1. 在 run 目录下写入样本级评分结果和汇总结果。
+2. 通常可查看 `summary.json`、`report.md` 等文件来快速理解结果。
 
 兼容串联入口：
 
@@ -611,7 +704,22 @@ python -m app.evals.ragas_scorer --run-dir <run_dir>
 python -m app.evals.ragas_runner --dataset-dir <dataset_dir> --review-status approved
 ```
 
----
+作用说明：
+
+1. 这是兼容入口，会先执行 `live_rag_runner`，再调用 `ragas_scorer`。
+2. 适合先跑通一轮完整链路，不想手动拆成两步执行的场景。
+
+参数说明：
+
+1. `--dataset-dir`：必填，数据集目录。
+2. `--output-root`：可选，实验输出根目录。
+3. `--limit`：可选，本次最多执行多少条样本。
+4. `--review-status`：可选，允许参与本次运行的审核状态列表，逗号分隔。
+
+补充说明：
+
+1. 想看中间执行结果、单独调试 run 记录时，优先使用 `live_rag_runner` + `ragas_scorer` 两步式流程。
+2. 想先跑一轮闭环验证时，优先使用 `ragas_runner`。
 
 ## 13. 推荐命令组合
 
@@ -679,3 +787,7 @@ python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/
 1. [RAGAS Evaluate and Improve a RAG App](https://docs.ragas.io/en/stable/howtos/applications/evaluate-and-improve-rag/)
 2. [RAGAS Metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/)
 3. [RAGAS TestsetGenerator](https://docs.ragas.io/en/stable/references/generate/)
+
+
+
+

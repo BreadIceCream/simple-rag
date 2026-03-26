@@ -35,8 +35,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="", help="optional explicit dataset directory")
     parser.add_argument("--max-batch-retries", type=int, default=3, help="retry count for each per-file synthetic generation batch")
     parser.add_argument("--retry-backoff-seconds", type=float, default=2.0, help="base backoff seconds between batch retries")
-    parser.add_argument("--max-chunks-per-batch", type=int, default=3, help="default maximum parent chunks sent to one ragas scenario-generation batch")
+    parser.add_argument("--max-chunks-per-batch", type=int, default=0, help="optional hard cap for parent chunks sent to one ragas batch; 0 means no fixed cap")
     parser.add_argument("--max-topup-rounds", type=int, default=5, help="maximum rounds used to top up synthetic samples when the first pass undershoots target size")
+    parser.add_argument("--ragas-max-workers", type=int, default=1, help="max concurrent workers used by ragas testset generation")
+    parser.add_argument("--ragas-timeout", type=int, default=240, help="per-operation timeout in seconds passed to ragas RunConfig")
+    parser.add_argument("--ragas-max-retries", type=int, default=8, help="max retries passed to ragas RunConfig")
+    parser.add_argument("--ragas-max-wait", type=int, default=30, help="max wait seconds between ragas retries")
+    parser.add_argument("--llm-timeout", type=int, default=240, help="timeout in seconds passed to init_chat_model for synthetic generation")
+    parser.add_argument("--llm-max-retries", type=int, default=6, help="max retries passed to init_chat_model for synthetic generation")
+    parser.add_argument("--llm-requests-per-second", type=float, default=0.5, help="optional per-batch rate limit for synthetic generation llm calls")
     return parser.parse_args()
 
 
@@ -136,16 +143,45 @@ def _resolve_testset_generator(llm: Any, embeddings: Any):
     return TestsetGenerator(**kwargs) if kwargs else TestsetGenerator(llm_obj, embeddings_obj)
 
 
-def _generate_with_chunks(generator: Any, chunks: list[Any], size: int):
+def _build_ragas_run_config(args: argparse.Namespace):
+    from ragas.run_config import RunConfig
+
+    return RunConfig(
+        timeout=max(1, args.ragas_timeout),
+        max_retries=max(0, args.ragas_max_retries),
+        max_wait=max(1, args.ragas_max_wait),
+        max_workers=max(1, args.ragas_max_workers),
+        log_tenacity=False,
+        seed=args.seed,
+    )
+
+
+def _init_generation_llm(model_name: str, args: argparse.Namespace):
+    kwargs: dict[str, Any] = {
+        "timeout": max(1, args.llm_timeout),
+        "max_retries": max(0, args.llm_max_retries),
+    }
+    if args.llm_requests_per_second > 0:
+        from langchain_core.rate_limiters import InMemoryRateLimiter
+
+        kwargs["rate_limiter"] = InMemoryRateLimiter(
+            requests_per_second=float(args.llm_requests_per_second),
+            check_every_n_seconds=0.1,
+            max_bucket_size=1,
+        )
+    return init_chat_model(model_name, **kwargs)
+
+
+def _generate_with_chunks(generator: Any, chunks: list[Any], size: int, run_config: Any):
     if not hasattr(generator, "generate_with_chunks"):
         raise RuntimeError("Current ragas version does not expose generate_with_chunks.")
     try:
-        return generator.generate_with_chunks(chunks=chunks, testset_size=size)
+        return generator.generate_with_chunks(chunks=chunks, testset_size=size, run_config=run_config)
     except TypeError:
         try:
-            return generator.generate_with_chunks(chunks, size)
+            return generator.generate_with_chunks(chunks, size, run_config=run_config)
         except TypeError:
-            return generator.generate_with_chunks(chunks=chunks, size=size)
+            return generator.generate_with_chunks(chunks=chunks, size=size, run_config=run_config)
 
 
 def _normalize_text(value: str) -> str:
@@ -279,21 +315,41 @@ def _load_generation_plan(doc_limit: int, size: int, seed: int, recency_tau_days
     return plan, selected_file_ids, summary
 
 
-def _resolve_dynamic_chunk_limit(plan_item: dict[str, Any], full_plan: list[dict[str, Any]], default_limit: int) -> tuple[int, dict[str, Any]]:
-    base_limit = max(1, default_limit)
+def _resolve_dynamic_chunk_limit(plan_item: dict[str, Any], full_plan: list[dict[str, Any]], hard_cap: int) -> tuple[int, dict[str, Any]]:
+    requested_quota = max(1, int(plan_item["allocated_quota"]))
+    explicit_cap = max(0, hard_cap)
+    base_limit = min(requested_quota, explicit_cap) if explicit_cap else requested_quota
     same_quota_items = [item for item in full_plan if item["allocated_quota"] == plan_item["allocated_quota"]]
     if not same_quota_items:
-        return base_limit, {"reason": "default", "safe_avg_chunk_chars": None, "safe_batch_chars": None}
+        return base_limit, {"reason": "default", "safe_avg_chunk_chars": None, "safe_batch_chars": None, "requested_quota": requested_quota}
 
     safe_avg_chunk_chars = min(item["avg_chunk_chars"] for item in same_quota_items)
-    safe_batch_chars = safe_avg_chunk_chars * base_limit
+    safe_batch_chars = safe_avg_chunk_chars * requested_quota
     current_avg = max(plan_item["avg_chunk_chars"], 1.0)
-    effective_limit = max(1, min(base_limit, int(safe_batch_chars // current_avg) or 1))
+    current_total = plan_item["total_chunk_chars"]
+    threshold_ratio = 1.1
+    if current_total <= safe_batch_chars * threshold_ratio:
+        return base_limit, {
+            "reason": "within_safe_batch_budget",
+            "safe_avg_chunk_chars": round(safe_avg_chunk_chars, 1),
+            "safe_batch_chars": round(safe_batch_chars, 1),
+            "current_avg_chunk_chars": round(current_avg, 1),
+            "current_total_chunk_chars": current_total,
+            "requested_quota": requested_quota,
+            "explicit_cap": explicit_cap or None,
+        }
+
+    dynamic_limit = max(1, int(safe_batch_chars // current_avg) or 1)
+    effective_limit = min(base_limit, dynamic_limit)
     return effective_limit, {
         "reason": "dynamic_chars",
         "safe_avg_chunk_chars": round(safe_avg_chunk_chars, 1),
         "safe_batch_chars": round(safe_batch_chars, 1),
         "current_avg_chunk_chars": round(plan_item["avg_chunk_chars"], 1),
+        "current_total_chunk_chars": current_total,
+        "requested_quota": requested_quota,
+        "dynamic_limit": dynamic_limit,
+        "explicit_cap": explicit_cap or None,
     }
 
 
@@ -358,9 +414,10 @@ def _generate_samples_for_plan_item(
     args: argparse.Namespace,
     global_scope_file_ids: list[str],
 ) -> list[EvalSample]:
-    llm = init_chat_model(model_name)
+    llm = _init_generation_llm(model_name, args)
     generator = _resolve_testset_generator(llm, embeddings)
-    testset = _generate_with_chunks(generator, plan_item["chunks"], plan_item["allocated_quota"])
+    run_config = _build_ragas_run_config(args)
+    testset = _generate_with_chunks(generator, plan_item["chunks"], plan_item["allocated_quota"], run_config=run_config)
     rows = _to_rows(testset)
 
     samples: list[EvalSample] = []
@@ -411,6 +468,30 @@ def _generate_samples_for_plan_item(
     return samples
 
 
+def _is_connection_like_error(exc: BaseException) -> bool:
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        name = current.__class__.__name__
+        message = str(current).lower()
+        if name in {"APIConnectionError", "APITimeoutError", "ConnectError", "ReadTimeout", "TimeoutException"}:
+            return True
+        if "connection error" in message or "timed out" in message or "temporarily unavailable" in message:
+            return True
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
+    return False
+
+
 def _generate_samples_with_retry(
     embeddings: Any,
     model_name: str,
@@ -443,6 +524,25 @@ def _generate_samples_with_retry(
                 f"DATASET BUILD: synthetic batch failed file_id={plan_item['file_id']} file_name={plan_item['file_name']} sub_batch={batch_label} attempt={attempt}/{max_attempts} error={exc.__class__.__name__}: {exc}. retry_in={sleep_seconds:.1f}s"
             )
             time.sleep(sleep_seconds)
+    if last_exc is not None and _is_connection_like_error(last_exc) and plan_item["allocated_quota"] > 1:
+        adaptive_limit = max(1, math.ceil(plan_item["allocated_quota"] / 2))
+        print(
+            f"DATASET BUILD: adaptively splitting failed batch file_id={plan_item['file_id']} file_name={plan_item['file_name']} sub_batch={batch_label} quota={plan_item['allocated_quota']} into smaller batches with limit={adaptive_limit}"
+        )
+        adaptive_samples: list[EvalSample] = []
+        for split_batch in _iter_sub_batches(plan_item, adaptive_limit):
+            split_batch["adaptive_split_from_quota"] = plan_item["allocated_quota"]
+            adaptive_samples.extend(
+                _generate_samples_with_retry(
+                    embeddings=embeddings,
+                    model_name=model_name,
+                    plan_item=split_batch,
+                    args=args,
+                    global_scope_file_ids=global_scope_file_ids,
+                )
+            )
+        return adaptive_samples
+
     raise RuntimeError(
         f"Synthetic generation failed for file_id={plan_item['file_id']} file_name={plan_item['file_name']} sub_batch={batch_label} quota={plan_item['allocated_quota']} after {max_attempts} attempts"
     ) from last_exc
@@ -592,7 +692,7 @@ def _topup_samples(
             extra_plan = _sample_additional_chunks(plan_item, topup_count, seed=args.seed + round_index * 1000 + topup_count)
             if extra_plan is None:
                 continue
-            effective_chunk_limit = plan_item.get("effective_chunk_limit", args.max_chunks_per_batch)
+            effective_chunk_limit = plan_item.get("effective_chunk_limit") or extra_plan["allocated_quota"]
             sub_batches = _iter_sub_batches(extra_plan, effective_chunk_limit)
             for sub_batch in sub_batches:
                 sub_batch["topup_round"] = round_index
@@ -658,7 +758,7 @@ def main() -> None:
         plan_summary["requested_sample_count"] = args.size
         plan_summary["actual_sample_count"] = len(samples)
         plan_summary["undershot_sample_count"] = max(args.size - len(samples), 0)
-        plan_summary["effective_chunk_limits"] = {item["file_id"]: item.get("effective_chunk_limit", args.max_chunks_per_batch) for item in generation_plan}
+        plan_summary["effective_chunk_limits"] = {item["file_id"]: item.get("effective_chunk_limit", item["allocated_quota"]) for item in generation_plan}
         plan_summary["dynamic_batch_decisions"] = {
             item["file_id"]: item.get("dynamic_batch_decision", {}) for item in generation_plan
         }
@@ -681,6 +781,13 @@ def main() -> None:
                 "retry_backoff_seconds": args.retry_backoff_seconds,
                 "max_chunks_per_batch": args.max_chunks_per_batch,
                 "max_topup_rounds": args.max_topup_rounds,
+                "ragas_max_workers": args.ragas_max_workers,
+                "ragas_timeout": args.ragas_timeout,
+                "ragas_max_retries": args.ragas_max_retries,
+                "ragas_max_wait": args.ragas_max_wait,
+                "llm_timeout": args.llm_timeout,
+                "llm_max_retries": args.llm_max_retries,
+                "llm_requests_per_second": args.llm_requests_per_second,
                 "review_note": "Synthetic datasets require manual review before they are promoted into baseline or regression usage.",
             },
         )
