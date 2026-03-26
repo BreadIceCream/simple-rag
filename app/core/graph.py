@@ -738,12 +738,14 @@ class Graph:
         print("GRAPH: Graph built and compiled successfully.")
 
         # 将图绘制到项目根目录的 graph.md 中
-        if global_config.get("graph", {}).get("visualization", False):
-            from pathlib import Path
-            rag_root = Path(__file__).resolve().parent.parent.parent
-            with open(rag_root / "graph.md", "w", encoding="utf-8") as f:
-                f.write(cls._compiled_graph.get_graph().draw_mermaid())
-                print(f"GRAPH: Graph visualization saved to {rag_root / 'graph.md'}")
+        debug_mode = global_config.get("debug", {})
+        if debug_mode.get("enabled", False):
+            if debug_mode.get("graph_visualization", False):
+                from pathlib import Path
+                rag_root = Path(__file__).resolve().parent.parent.parent
+                with open(rag_root / "graph.md", "w", encoding="utf-8") as f:
+                    f.write(cls._compiled_graph.get_graph().draw_mermaid())
+                    print(f"GRAPH: Graph visualization saved to {rag_root / 'graph.md'}")
 
         return cls._compiled_graph
 

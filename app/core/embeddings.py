@@ -45,7 +45,7 @@ class EmbeddingModelFactory:
                 print(f"INIT EMBEDDING MODEL LOCAL: Using HuggingFace embedding model <{embedding_model}>...")
                 cls._instance = HuggingFaceEmbeddings(
                     model_name=embedding_model,
-                    model_kwargs={"device": device, "local_files_only": True},
+                    model_kwargs={"device": device},
                 )
         print("INIT EMBEDDING MODEL: Initialized successfully.")
         return cls._instance

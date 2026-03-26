@@ -32,7 +32,7 @@ class QwenNativeReranker(BaseDocumentCompressor):
         print(f"initializing Qwen Native Re-ranker model: {self.model_name}...")
 
         # 1. init model and tokenizer
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side='left', trust_remote_code=True, local_files_only=True)
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side='left', trust_remote_code=True)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
 

@@ -309,9 +309,14 @@ class DocumentLoaderChain:
         chain = cls()
 
         # 注册内置的 DocumentLoader 子类
-        import torch
-        chain.register(DoclingDocumentLoader(order=15 if torch.cuda.is_available() else 20))  # GPU环境优先使用Docling加载Office文件，CPU环境放后面避免性能问题
-        chain.register(TrafilaturaLoader(order=15))
+        debug_mode = global_config.get("debug", {})
+        docling_order = 10
+        trafilatura_order = 10
+        if debug_mode.get("enabled", False):
+            docling_order = 5 if debug_mode.get("docling_front", False) else 15
+            trafilatura_order = 5 if debug_mode.get("trafilatura_front", False) else 15
+        chain.register(DoclingDocumentLoader(order=docling_order))
+        chain.register(TrafilaturaLoader(order=trafilatura_order))
         chain.register(PDFLoader(order=10))
         chain.register(HTMLLoader(order=10))
         chain.register(TextLoader(order=10))
