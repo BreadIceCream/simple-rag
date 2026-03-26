@@ -1,186 +1,298 @@
-# Simple RAG (Retrieval-Augmented Generation) System
+﻿# Simple RAG (Retrieval-Augmented Generation) System
 
-[中文版本](./README-zh.md)      [Front End Project](https://github.com/BreadIceCream/simple-rag-frontend)
+[中文版本](./README-zh.md) | [Front End Project](https://github.com/BreadIceCream/simple-rag-frontend)
 
-An advanced **Agentic RAG** system backend service developed based on **LangChain**, **LangGraph**, and **FastAPI**, supporting multimodal document retrieval. It features an intelligent reflective state machine, a hybrid retrieval strategy (BM25 + Vector Semantic Search + RRF), hierarchical chunking (Small-to-Big), and Re-ranking, offering highly accurate and hallucination-free conversations via SSE streaming.
+Simple RAG is an **Agentic RAG backend** built with **FastAPI**, **LangChain**, and **LangGraph**. It combines multi-format document ingestion, hierarchical chunking, hybrid retrieval, reranking, reflective answer generation, SSE streaming, and a **real-execution evaluation pipeline** based on **RAGAS**.
 
-For more detailed information, please view the `docs` directory.
+The system is designed around a simple principle: both online answering and offline evaluation should run through the real retrieval and graph workflow as much as possible. The project therefore focuses on production-style retrieval quality, controllable graph behavior, and evaluation grounded in actual system execution rather than synthetic self-scoring only.
 
-## Features
+For detailed technical documents, see the `docs/` directory.
 
-  - 🧠 **Agentic Reflexive Graph Workflow**: Built on LangGraph, featuring a cognitive state machine for self-reflection, hallucination checking, usefulness evaluation, and question rewriting (Thinking-Rewriting loop).
-  - 🔄 **Hybrid Retrieval & RRF Fusion**: Combines BM25 sparse keyword retrieval with embedding-based dense semantic search, united by Reciprocal Rank Fusion (RRF).
-  - 🍱 **Intelligent Hierarchical Chunking**: Utilizes the Parent Document Retriever pattern with language/format-aware splitters (Markdown/HTML headers, Code splitters).
-  - 🎯 **Advanced Re-ranking Optimization**: Seamless integration with Qwen Reranker and other lightweight compressors for deep semantic abstract re-ranking.
-  - 🌐 **Multi-modal Document Ingestion**: Cascading parsers for local files (PDF, HTML, Markdown, Code) and remote Web URLs.
-  - ⚡ **High-Performance Backend**: FastAPI powered asynchronous architecture, backed by async SQLAlchemy and psycopg connection pooling.
-  - 📡 **Real-time SSE Streaming**: Delivers token-by-token streaming responses with intelligent error recovery and LangGraph Checkpoint state persistence.
+## Core Features
 
-## System Architecture
+- **Agentic LangGraph Workflow**: Retrieval, direct response, question rewriting, hallucination checking, usefulness checking, and conversation summarization are organized as a persistent state machine.
+- **Hybrid Retrieval**: Semantic vector retrieval and BM25-style sparse retrieval are fused with reciprocal rank fusion.
+- **Hierarchical Parent-Child Chunking**: Parent chunks preserve semantic completeness while child chunks improve recall granularity.
+- **Structure-Aware Ingestion**: Markdown, HTML, code, Office documents, PDFs, and web pages are loaded with different strategies instead of a single generic loader.
+- **Optional Reranking**: Qwen-based rerankers can be enabled to improve final parent-document ordering.
+- **Conversation Persistence and Resume**: LangGraph checkpoints are stored in PostgreSQL so interrupted chats can be resumed.
+- **SSE Streaming**: Token events, graph progress, final answers, and references are streamed to the client in real time.
+- **Real RAG Evaluation with RAGAS**: Datasets, live execution, retrieval metrics, and RAGAS scoring are integrated into one offline evaluation workflow.
 
-### Core Components
+## Core Components
 
-1.  **FastAPI & Routing Layer**
-      - `/api/documents`: Document ingestion and management.
-      - `/api/retrieval`: Retrieval testing and references binding.
-      - `/api/conversation`: Chat interface with SSE streaming and history management.
-2.  **Document Processing & Chunking**
-      - Chain of Responsibility pattern for loaders (PDF, HTML, Text, WebBase).
-      - Registry pattern for dynamic splitting strategies (Markdown/HTML/Code/Universal).
-3.  **Retrieval & Vector Store Engine**
-      - `EnhancedParentDocumentRetriever` + `HybridPDRetriever` for robust search.
-      - ChromaDB (Vector Store) and LocalFileStore (KV Store) for cascading indices.
-4.  **Reflexive LangGraph Agent**
-      - State persistence via PostgresSaver (Checkpoints).
-      - Nodes for: `retrieve`, `grade_documents`, `generate_answer`, `check_hallucination`, `check_usefulness`, `rewrite_question`, and `summarize_conversation`.
+### Online Serving Path
+
+1. `app/main.py` initializes config, database, embeddings, vector store, docstore, loaders, splitters, retrievers, rerankers, Elasticsearch, and LangGraph.
+2. `app/core/document_loader.py` loads local files and URLs into unified `Document` objects.
+3. `app/core/chunking.py` applies structure-aware parent splitting and smaller child splitting.
+4. `app/core/retriever.py` builds the hybrid retrieval pipeline across Chroma, Elasticsearch, and parent-doc backtracking.
+5. `app/core/reranker.py` optionally reranks fused parent-document candidates.
+6. `app/core/graph.py` defines the answer-generation workflow and recovery loop.
+7. `app/routers/conversation.py` exposes SSE chat APIs on top of the graph.
+
+### Offline Evaluation Path
+
+1. `app/evals/build_replay_dataset.py`, `build_synthetic_dataset.py`, and `import_seed_dataset.py` prepare datasets from different sources.
+2. `app/evals/live_rag_runner.py` executes the real RAG system against dataset samples.
+3. `app/evals/ragas_scorer.py` scores the run with RAGAS and retrieval metrics.
+4. `app/evals/ragas_runner.py` provides a one-command wrapper for the full flow.
+5. Evaluation artifacts are stored under `store/evals/datasets/` and `store/evals/experiments/`.
+
+## Technical Highlights
+
+- **Graph-based recovery loop**: The workflow does not just retrieve once and answer. It can rewrite the question, regenerate, and self-check support and usefulness before ending.
+- **Parent-document retrieval design**: The system retrieves fine-grained child chunks, then reconstructs answer context from parent chunks for better coherence.
+- **Structure-preserving splitting**: Markdown headers, HTML headers, and code language boundaries are preserved as much as possible before recursive splitting.
+- **Scoped retrieval**: Retrieval can be restricted to a selected set of files, which is used both by the online retriever endpoints and by the conversation graph.
+- **Persistent graph state**: PostgreSQL-backed checkpointers make conversation state resumable and inspectable.
+- **Evaluation decoupling**: Dataset construction is separated from live execution and scoring, allowing replay, synthetic, and imported datasets to share the same evaluation runner.
+- **Evaluation robustness for synthetic generation**: Synthetic dataset generation includes low-concurrency RAGAS execution, dynamic batch control, retry/backoff, and adaptive batch splitting for heavy files.
+
+## Architecture
+
+### Online RAG Path
+
+1. Load configuration from `config.yml` and environment variables.
+2. Initialize database, embedding model, vector store, and parent document store.
+3. Initialize loaders, splitters, retrievers, rerankers, and LangGraph.
+4. Expose APIs for document ingestion, retrieval testing, and conversation.
+
+### Offline Evaluation Path
+
+1. Build or import an evaluation dataset.
+2. Optionally export and apply a review sheet.
+3. Execute the real RAG pipeline for every sample.
+4. Score the run with RAGAS and retrieval metrics.
+5. Inspect run artifacts such as `summary.json` and `report.md`.
+
+## Project Structure
+
+```text
+RAG/
+├── app/
+│   ├── main.py
+│   ├── config/
+│   ├── core/
+│   ├── crud/
+│   ├── evals/
+│   ├── exception/
+│   ├── models/
+│   └── routers/
+├── docs/
+│   ├── 项目说明文档.md
+│   ├── RAGAS集成方案.md
+│   └── Evals数据集审核说明.md
+├── store/
+│   ├── chroma_langchain_db/
+│   ├── parent_docs/
+│   └── evals/
+│       ├── datasets/
+│       └── experiments/
+├── test_docs/
+├── v1/
+├── config.yml
+├── docker-compose.yml
+├── Dockerfile
+├── README.md
+└── README-zh.md
+```
+
+### `app/core` Overview
+
+- `document_loader.py`: multi-format and URL ingestion with unified metadata.
+- `chunking.py`: structure-aware parent splitting and child splitting registry.
+- `embeddings.py`: embedding backend initialization and switching.
+- `vector_store.py`: Chroma vector store and local parent-doc store management.
+- `retriever.py`: Elasticsearch retrieval, parent-doc retrieval, hybrid fusion, and retrieval scoping.
+- `reranker.py`: optional reranking layer.
+- `graph.py`: LangGraph state machine for online answering.
+
+### `app/evals` Overview
+
+- `build_replay_dataset.py`
+- `build_synthetic_dataset.py`
+- `import_seed_dataset.py`
+- `dataset_builder.py`
+- `live_rag_runner.py`
+- `ragas_runner.py`
+- `ragas_scorer.py`
+- `retrieval_scorer.py`
+- `metrics_registry.py`
+- `reporter.py`
+- `runtime.py`
+- `schema.py`
+
+See [docs/RAGAS集成方案.md](./docs/RAGAS集成方案.md) for the file-by-file explanation and command reference.
 
 ## Technical Stack
-- **Core Frameworks**: Python 3.12+ | FastAPI | LangChain | LangGraph
-- **Database & ORM**: PostgreSQL | SQLAlchemy (async) | psycopg (pool) | ChromaDB
-- **AI/NLP**: HuggingFace(Qwen) / OpenAI Embeddings | Qwen Reranker | NLTK + jieba
 
-## Installation and Configuration
+- **Language**: Python 3.12+
+- **Backend**: FastAPI
+- **RAG Frameworks**: LangChain, LangGraph
+- **Database**: PostgreSQL, SQLAlchemy (async), psycopg
+- **Sparse Retrieval**: Elasticsearch
+- **Vector Store**: ChromaDB
+- **Embedding / LLM**: HuggingFace or OpenAI-compatible backends
+- **Reranking**: Qwen Reranker
+- **Evaluation**: RAGAS
 
-### Environment Requirements
+## Installation
 
-  - Python 3.12+.
-  - PostgreSQL Database instance.
-  - PyTorch (with optional CUDA support).
-  - The following package dependencies.
+### Requirements
 
-### Dependency Installation
+- Python 3.12+
+- PostgreSQL
+- Elasticsearch
+- PyTorch
+- Dependencies from `requirements.txt`
 
-See `requirements.txt`
+### Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### Environment Variable Configuration
+## Configuration
 
-Copy and configure the `.env-backup` file to `.env` or adjust properties inside `config.yml`:
+Configure `.env` as needed and update `config.yml`.
+
+### `config.yml` Highlights
 
 ```yaml
-# config.yml highlights:
+env_override: false
+
 database:
-  url: postgresql+asyncpg://user:password@localhost:5432/simple_rag
+  url: postgresql+asyncpg://postgres:pg123456@localhost:5432/simple_rag
+
+elasticsearch:
+  url: https://localhost:9200
+  username: elastic
 
 chat_model:
-  default: gpt-5-mini           # Primary model for response generation
-  light: gpt-4o-mini            # Lightweight LLM for grading/reflection
+  default: gpt-4o-mini
+  light: gpt-4o-mini
 
 embedding:
   model: Qwen/Qwen3-Embedding-0.6B
+  openai:
+    enabled: false
+  huggingface_remote_inference:
+    enabled: false
+
+chunking:
+  parent:
+    chunk_size: 1000
+    chunk_overlap: 120
+  child:
+    chunk_size: 256
+    chunk_overlap: 50
+
+vector_store:
+  collection_name: default
 
 retriever:
   final_k: 8
   reranker:
     enabled: true
+
+chat:
+  max_rewrite_time: 2
+  max_generate_time: 3
+  conversation_summarize_threshold: 10
+
+text_file_length_threshold: 1500
+
+debug:
+  enabled: true
+  docling_front: true
+  trafilatura_front: true
+  graph_visualization: false
 ```
 
-## Usage Instructions
+### Important Config Areas
 
-### Starting the System
+- `database`: async database and checkpoint persistence.
+- `elasticsearch`: sparse retrieval backend.
+- `chat_model`: default answer model and lightweight control model.
+- `embedding`: local or remote embedding backend.
+- `chunking`: parent / child chunk sizes and overlap.
+- `retriever`: final top-k and reranker switch.
+- `chat`: rewrite / generation retry limits and summarize threshold.
+- `debug`: ingestion and graph debugging switches.
+
+## Usage
+
+### Start the API Service
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-### Execution Flow
+### Main API Paths
 
-1.  **Initialization Phase (Application Startup)**
-      - Load environment variables from `config.yml` and `.env`.
-      - Initialize database connection pools and Vector Store instances.
-      - Initialize document loader chain, text splitter registry and retrievers.
-      - Set up embedding & reranking models.
-      - Compile LangGraph StateGraph engine.
-2.  **Interaction Phase**
-      - **Ingest documents** via POST `/api/documents/local` or `/api/documents/url`.
-      - **Set references** using POST `/api/retrieval/references`.
-      - **Chat via SSE** via POST `/api/conversation/chat`, receiving token stream and conversation states.
+- `/api/documents`: document ingestion and management
+- `/api/retrieval`: retrieval testing and reference scoping
+- `/api/conversation`: SSE chat interface
 
-### Document Loading
+## RAGAS Evaluation
 
-Supports versatile document loading:
-  - Call the API endpoint `/api/documents/local` to upload and ingest local file types.
-  - The system dynamically selects loaders (like PDFLoader, HTMLLoader) and chunks content via registered text splitters (like MarkdownTextSplitter, CodeTextSplitter), finally storing embeddings in ChromaDB and parent chunks in LocalFileStore automatically.
+The evaluation pipeline is designed around **real execution**:
 
-### Mode Descriptions
-The system intelligently decides between utilizing retrieval tools or returning direct responses dynamically via LLM tool-calling.
+1. Build or import a dataset.
+2. Optionally review the dataset.
+3. Run the real RAG system.
+4. Score the results with RAGAS and retrieval metrics.
 
-## Technical Details
+### Supported Dataset Types
 
-### Text Preprocessing & Chunking
+- `replay`: built from historical conversations
+- `synthetic`: generated from parent document chunks
+- `seed`: imported from curated `.json` / `.jsonl` files
 
-  - Context-aware chunking: MarkdownHeaderTextSplitter, HTMLHeaderTextSplitter, Language-specific RecursiveCharacterTextSplitter for optimal embedding representation.
-  - Chinese/English bilingual text preprocessing for BM25 with `jieba` and `nltk` stop-word semantic filtering.
+### Quick Smoke Test
 
-### Retrieval Strategy
-
-1.  **Parent Document Retriever**: Segregates large documents (parents) and small semantic chunks (children).
-2.  **Hybrid Search**: Merges sparse keyword (BM25) and dense vector retrievals.
-3.  **RRF Fusion**: Re-ranks the combined lists mitigating domain bias.
-4.  **Cross-Encoder Re-ranking**: Final precision adjustment utilizing Qwen Reranker.
-
-### LangGraph Agent State Machine
-
-The Agent decides between fulfilling direct queries or retrieving documents. If retrieved documents are irrelevant, the LLM rewrites the query automatically. Generated answers get double-checked for hallucination and usefulness; failures trigger internal loops (generate -> check -> rewrite) until maximum retry thresholds are reached.
-
-## File Structure
-
-```
-RAG/
-├── app/                          
-│   ├── main.py                   # FastAPI Application Entry
-│   ├── config/                   # Global & DB Configuration
-│   ├── core/                     # Core Engine (Loader, Chunking, Retrieval, Graph)
-│   ├── crud/                     # PostgreSQL Operations
-│   ├── routers/                  # API Endpoints (Docs, Retrieval, Chat)
-│   ├── models/                   # Schemas, VOs, Graph States
-│   └── exception/                # Exception Handling
-│  
-├── docs/ 						  # reference document
-│
-├── .env-backup                   # Env variable backup
-├── config.yml                    # Project Configuration File
-├── Dockerfile                    # Docker Deployment
-├── README.md                     # English Documentation
-└── README-zh.md                  # Chinese Documentation
+```bash
+python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --limit 10 --review-status pending,approved
 ```
 
-## Extension Development
+### Optional Review Flow
 
-### Adding New Tools & Capabilities
-1. Integrate new features as distinct FastAPI Routers.
-2. For Graph extensions, add new nodes or modify conditional edges within `app/core/graph.py` and implement corresponding business logic inside LangGraph states.
+```bash
+python -m app.evals.dataset_builder export-review --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1
+python -m app.evals.dataset_builder apply-review --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-file store/evals/datasets/exploration/synthetic_smoke/v1/review_sheet.csv
+```
 
-### Customizing Loaders or Splitters
-Inherit `DocumentLoader` to support new MIME types and register them in `DocumentLoaderChain`.
-Register custom text split logic via `SplitterRegistry`.
+### Two-Step Execution Flow
+
+```bash
+python -m app.evals.live_rag_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-status pending,approved
+python -m app.evals.ragas_scorer --run-dir <run_dir>
+```
+
+### One-Step Wrapper
+
+```bash
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-status pending,approved
+```
+
+### Evaluation Artifacts
+
+- Datasets: `store/evals/datasets/...`
+- Runs: `store/evals/experiments/...`
+- Common outputs: `manifest.json`, `samples.jsonl`, `review_sheet.csv`, `records.jsonl`, `summary.json`, `report.md`
+
+For the full evaluation design, dataset schema, and command reference, see [docs/RAGAS集成方案.md](./docs/RAGAS集成方案.md).
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Database Connection Failure**: Ensure PostgreSQL is running and credentials match `config.yml`.
-2. **CUDA Unavailable**: Application automatically falls back to CPU for native HuggingFace embeddings.
-3. **Graph Looping Exceeded Max Limits**: Lower the `max_rewrite_time` and `max_generate_time` in configurations.
-
-## Changelog
-
-### v1.0
-
-- Implementation of the basic RAG system.
-- Hybrid retrieval functionality.
-- Tool-calling integration.
-- Asynchronous processing optimization.
-
-### v2.0 (Current Version)
-- Fully refactored into a FastAPI backend service.
-- Implemented LangGraph self-reflection Agent architecture.
-- Replaced basic RAG strategy with Hybrid PDRetriever (BM25 + Vector + RRF + PDRetrieve + Rerank).
-- Migrated state to asynchronous persistence (SQLAlchemy + PostgresSaver).
-- Replaced CLI chat with SSE streaming REST API endpoints.
+1. **Database connection issues**: verify the PostgreSQL URL in `config.yml`.
+2. **Elasticsearch issues**: check the ES URL, credentials, and local certificate setup.
+3. **Embedding or model loading failures**: check local model dependencies and environment variables.
+4. **Evaluation connection errors**: lower synthetic generation concurrency or use the low-concurrency defaults built into `build_synthetic_dataset`.
+5. **Graph retry loops are too aggressive**: tune `chat.max_rewrite_time` and `chat.max_generate_time`.
 
 ## Contributing
 
-Contributions are welcome! Please submit Issues and Pull Requests to improve the project.
+Issues and pull requests are welcome.

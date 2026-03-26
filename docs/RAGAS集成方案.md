@@ -86,7 +86,95 @@ synthetic 默认不直接承担：
 
 ---
 
-## 4. 运行时初始化策略
+## 4. 当前 `app/evals` 文件总览
+
+本节按当前 `app/evals/` 目录中的实际文件逐一说明职责，作为脚本总览索引。
+
+### 4.1 `__init__.py`
+
+1. 标识 `app.evals` 为 Python package。
+2. 当前不承载主要业务逻辑。
+
+### 4.2 `schema.py`
+
+1. 定义评测链路使用的核心数据结构。
+2. 包括数据集 manifest、样本、run record 等统一 schema。
+3. 是数据集构建、真实执行、评分与报告共享的字段基线。
+
+### 4.3 `dataset_builder.py`
+
+1. 负责数据集的落盘与读取。
+2. 负责生成 `manifest.json`、`samples.jsonl`、`review_sheet.csv`、`review_guide.md`。
+3. 提供审核表导出与审核结果回填命令。
+4. 统一生成构建报告。
+
+### 4.4 `runtime.py`
+
+1. 负责按 profile 初始化最小运行时。
+2. 避免所有脚本都初始化完整 Graph 和所有依赖。
+3. 支持 `dataset_seed`、`dataset_synthetic`、`dataset_replay`、`full` 等 profile。
+4. 在 Windows 下显式切换到 `WindowsSelectorEventLoopPolicy` 以降低异步清理问题。
+
+### 4.5 `build_replay_dataset.py`
+
+1. 从历史 `chat_history` 中抽取真实问答样本。
+2. 回溯历史引用或父块信息，补齐 `reference_contexts`、`reference_doc_ids`、`scope_file_ids`。
+3. 支持直接使用历史回答，或使用 LLM 生成候选 `reference_answer`。
+4. 适合构建 baseline 候选集和 regression 候选集。
+
+### 4.6 `build_synthetic_dataset.py`
+
+1. 基于知识库父文档块和 RAGAS `TestsetGenerator` 生成 synthetic 数据集。
+2. 按文件父块数量动态分配 quota。
+3. 支持文件覆盖约束、动态 batch 控制、失败重试、按比例 top-up。
+4. 适合做 cold start、smoke test 和探索型实验。
+
+### 4.7 `import_seed_dataset.py`
+
+1. 导入人工或外部准备好的 `.json` / `.jsonl` 样本。
+2. 将外部字段标准化到统一 schema。
+3. 自动补齐缺失字段，例如从 `reference_doc_ids` 推断 `scope_file_ids`。
+4. 适合导入专项集、人工回归集和已有题库。
+
+### 4.8 `live_rag_runner.py`
+
+1. 读取数据集样本并逐条调用真实 RAG 系统。
+2. 保存真实的 `actual_response`、`actual_contexts`、`actual_doc_ids`、耗时、状态与轨迹信息。
+3. 只负责真实执行，不负责评分。
+
+### 4.9 `retrieval_scorer.py`
+
+1. 负责传统检索指标计算。
+2. 在样本具备 `reference_doc_ids` 等字段时计算 `Recall@k`、`Precision@k`、`MRR@k` 等指标。
+3. 作为 RAGAS 之外的检索效果补充评估层。
+
+### 4.10 `metrics_registry.py`
+
+1. 根据样本字段和 `capabilities` 选择可用指标。
+2. 让 runner 和 scorer 不依赖数据集类别做硬编码分支。
+3. 保证 replay、synthetic、seed 等多种来源走同一条评分主链路。
+
+### 4.11 `ragas_scorer.py`
+
+1. 读取真实 run 结果并执行 RAGAS 评分。
+2. 按需计算 `faithfulness`、`context_recall`、`answer_relevancy` 等指标。
+3. 同时汇总 retrieval scorer 和 correctness judge 结果。
+
+### 4.12 `reporter.py`
+
+1. 将样本级评分和实验级汇总写入统一产物目录。
+2. 输出 `summary.json`、`report.md` 等可读结果。
+3. 负责 run 结果的格式收敛与报表落盘。
+
+### 4.13 `ragas_runner.py`
+
+1. 作为兼容的一键入口。
+2. 先调用 `live_rag_runner`，再调用 `ragas_scorer`。
+3. 适合快速跑通完整评测闭环。
+
+---
+
+## 5. 运行时初始化策略
 
 当前 `runtime.py` 已经改为按 profile 初始化最小依赖，而不是所有脚本都初始化完整 Graph 运行时。
 
@@ -111,9 +199,9 @@ synthetic 默认不直接承担：
 
 ---
 
-## 5. 数据集模型
+## 6. 数据集模型
 
-### 5.1 数据集分类
+### 6.1 数据集分类
 
 当前方案使用以下分类：
 
@@ -128,7 +216,7 @@ synthetic 默认不直接承担：
 5. `specialized`
    - 某个专项能力的数据集，例如拒答、多跳、代码文档问答等。
 
-### 5.2 capabilities
+### 6.2 capabilities
 
 每个样本和数据集都由字段自动推导 `capabilities`，常见包括：
 
@@ -138,7 +226,7 @@ synthetic 默认不直接承担：
 4. `has_rubric`
 5. `has_reference_tool_calls`
 
-### 5.3 样本最小字段
+### 6.3 样本最小字段
 
 每条样本至少应尽量具备：
 
@@ -156,26 +244,26 @@ synthetic 默认不直接承担：
 
 ---
 
-## 6. 三种当前落地的数据集形态
+## 7. 三种当前落地的数据集形态
 
-### 6.1 replay
+### 7.1 replay
 
 1. 来源于真实历史会话与历史检索结果。
 2. 最接近真实用户问题分布。
 3. 适合沉淀为 `baseline` 和 `regression`。
 
-### 6.2 synthetic
+### 7.2 synthetic
 
 1. 来源于知识库父文档块，经 RAGAS `TestsetGenerator` 自动生成。
 2. 构建成本最低，适合冷启动、探索集和 smoke test。
 3. 不应直接作为正式质量结论。
 
-### 6.3 seed import
+### 7.3 seed import
 
 1. 来源于人工整理、业务侧提供、外部系统导出或已有题库文件。
 2. 最灵活，适合作为专项集、回归集初稿或历史沉淀数据导入入口。
 
-### 6.4 区别
+### 7.4 区别
 
 1. 问题真实性
    - `replay` 最高。
@@ -196,9 +284,9 @@ synthetic 默认不直接承担：
 
 ---
 
-## 7. 当前三种数据集构建方式
+## 8. 当前三种数据集构建方式
 
-### 7.1 replay 数据集
+### 8.1 replay 数据集
 
 入口：`app/evals/build_replay_dataset.py`
 
@@ -218,7 +306,7 @@ synthetic 默认不直接承担：
 3. replay 数据集仍然需要人工审核，因为历史回答可能本身就有错误。
 4. `--limit` 的语义是“最多抽多少条”，不是“必须交付多少条”，因此不存在 synthetic 那种 top-up 问题。
 
-### 7.2 synthetic 数据集
+### 8.2 synthetic 数据集
 
 入口：`app/evals/build_synthetic_dataset.py`
 
@@ -231,7 +319,7 @@ synthetic 默认不直接承担：
 5. 根据 `reference_contexts` 回填 `reference_doc_ids`，保证样本可追溯。
 6. 记录每个文件的父块数、quota、chunk 字符长度统计和分批决策。
 
-#### 7.2.1 动态 batch 控制
+#### 8.2.1 动态 batch 控制
 
 为了降低大文件在 `Generating Scenarios` 阶段的失败概率，synthetic 构建加入了动态 batch 控制：
 
@@ -240,8 +328,9 @@ synthetic 默认不直接承担：
 3. 如果当前文件的平均 chunk 体量明显更大，则自动缩小该文件的实际 `effective_chunk_limit`。
 4. 该缩小只影响“每次提交给 RAGAS 的父块数量”，不会截断父文档块内容。
 5. 最终采用的 batch 上限会写入 `generation_plan.effective_chunk_limits`。
+6. 若某个 batch 多次重试仍因连接类异常失败，脚本会进一步将该 batch 二分成更小批次继续执行。
 
-#### 7.2.2 synthetic 的 `--size` 语义
+#### 8.2.2 synthetic 的 `--size` 语义
 
 当前 `--size` 表示“目标样本数”，而不是简单的首轮预算：
 
@@ -251,7 +340,7 @@ synthetic 默认不直接承担：
 4. 若经过多轮 top-up 后仍未达到目标样本数，脚本不会报错退出。
 5. 会保留已完成的数据集，并在 metadata 与日志中记录欠交数量。
 
-#### 7.2.3 synthetic 的当前状态
+#### 8.2.3 synthetic 的当前状态
 
 1. 解决了 `reference_doc_ids` 为空的问题。
 2. 解决了参与构建文件没有实际样本覆盖的问题。
@@ -259,13 +348,13 @@ synthetic 默认不直接承担：
 4. 将 `--size` 从“预算目标”提升为“尽量交付的目标样本数”，并支持按比例 top-up。
 5. 即使最终样本数低于目标值，也会保留已完成数据集并给出明确告警。
 
-#### 7.2.4 边界说明
+#### 8.2.4 边界说明
 
 1. 这套逻辑主要解决“文件覆盖”“样本追溯”“大文件批次稳定性”和“样本数不足自动补齐”问题。
 2. 它不会自动产生真正的跨文件多跳样本。
 3. 如果需要多文件问题，后续应单独设计 `specialized` multi-hop 数据集生成器。
 
-### 7.3 seed 数据集导入
+### 8.3 seed 数据集导入
 
 入口：`app/evals/import_seed_dataset.py`
 
@@ -281,7 +370,7 @@ synthetic 默认不直接承担：
 1. 不存在 synthetic 的配额和 top-up 问题，因为它不负责生成样本，只负责导入样本。
 2. 当前版本已支持自动反推 `scope_file_ids`，并在 `metadata` 中记录是否进行了推断。
 
-### 7.4 seed 导入格式要求
+### 8.4 seed 导入格式要求
 
 `import_seed_dataset.py` 支持输入 `.json` 或 `.jsonl`。
 
@@ -373,9 +462,9 @@ synthetic 默认不直接承担：
 
 ---
 
-## 8. 构建报告与产物
+## 9. 构建报告与产物
 
-### 8.1 数据集产物
+### 9.1 数据集产物
 
 1. `manifest.json`
    - 数据集名称、版本、类别、来源、capabilities、审核要求、构建元数据。
@@ -386,7 +475,7 @@ synthetic 默认不直接承担：
 4. `review_guide.md`
    - 审核说明。
 
-### 8.2 统一构建报告
+### 9.2 统一构建报告
 
 三种数据集构建脚本在完成构建后，都会打印统一格式的构建报告。报告由 `dataset_builder.format_build_report(...)` 生成，主要包含：
 
@@ -413,9 +502,9 @@ synthetic 默认不直接承担：
 
 ---
 
-## 9. 人工审核策略
+## 10. 人工审核策略
 
-### 9.1 哪些数据集必须人工审核
+### 10.1 哪些数据集必须人工审核
 
 正式使用前必须人工审核的数据集：
 
@@ -430,7 +519,7 @@ synthetic 默认不直接承担：
 1. `exploration`
 2. 普通 `synthetic`
 
-### 9.2 审核重点
+### 10.2 审核重点
 
 1. `user_input` 是否真实、清晰、无歧义。
 2. `reference_answer` 是否正确。
@@ -444,7 +533,7 @@ synthetic 默认不直接承担：
 
 ---
 
-## 10. 真实测评链路
+## 11. 真实测评链路
 
 真实测评流程：
 
@@ -462,9 +551,9 @@ synthetic 默认不直接承担：
 
 ---
 
-## 11. 指标体系
+## 12. 指标体系
 
-### 11.1 检索层指标
+### 12.1 检索层指标
 
 在样本具备 `reference_doc_ids` 时，优先计算：
 
@@ -474,7 +563,7 @@ synthetic 默认不直接承担：
 4. `MRR@k`
 5. `nDCG@k`
 
-### 11.2 RAGAS 指标
+### 12.2 RAGAS 指标
 
 在样本具备相应能力时，按需启用：
 
@@ -483,11 +572,11 @@ synthetic 默认不直接承担：
 3. `context_precision`
 4. `context_recall`
 
-### 11.3 回答正确性
+### 12.3 回答正确性
 
 当前实现中，`ragas_scorer.py` 还会基于 LLM judge 计算 correctness。
 
-### 11.4 后续可扩展指标
+### 12.4 后续可扩展指标
 
 1. 拒答正确率。
 2. 抗噪能力指标。
@@ -496,11 +585,11 @@ synthetic 默认不直接承担：
 
 ---
 
-## 12. 当前可用命令
+## 13. 当前可用命令
 
 本节只记录当前已经落地并可直接执行的命令。每条命令都按“用途、参数、说明”的方式描述，避免文档和脚本实现脱节。
 
-### 12.1 构建 replay 数据集
+### 13.1 构建 replay 数据集
 
 ```bash
 python -m app.evals.build_replay_dataset --name replay_baseline --version v1 --category baseline
@@ -533,7 +622,7 @@ python -m app.evals.build_replay_dataset --name replay_baseline --version v1 --c
 2. `--reference-mode ai` 更适合冷启动补齐 `reference_answer`，但仍建议对高价值样本做人审。
 3. 构建完成后会输出统一构建报告，并生成 `manifest.json`、`samples.jsonl`、`review_sheet.csv`、`review_guide.md`。
 
-### 12.2 构建 synthetic 数据集
+### 13.2 构建 synthetic 数据集
 
 ```bash
 python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model --max-batch-retries 5 --retry-backoff-seconds 3 --ragas-max-workers 1 --ragas-timeout 240 --ragas-max-retries 8 --ragas-max-wait 30 --llm-timeout 240 --llm-max-retries 6 --llm-requests-per-second 0.5
@@ -582,7 +671,7 @@ python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 
 6. 若经过多轮 top-up 后仍然达不到 `--size`，脚本会保留已完成的数据集，并在 `manifest.json` 中记录 `undershot_sample_count`。
 7. 构建报告会额外记录 `generation_plan`、`effective_chunk_limits`、`dynamic_batch_decisions` 等 synthetic 特有信息。
 
-### 12.3 导入 seed 数据集
+### 13.3 导入 seed 数据集
 
 ```bash
 python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --version v1 --category exploration --source-type manual --default-scope all
@@ -612,7 +701,7 @@ python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --
 2. 若输入里有 `reference_doc_ids`，脚本会尝试自动反推 `scope_file_ids`。
 3. 适合作为 baseline、regression 的正式入口之一，因为它最容易接入人工审核后的高质量样本。
 
-### 12.4 导出和回填审核表
+### 13.4 导出和回填审核表
 
 **导出审核表：**
 
@@ -629,8 +718,6 @@ python -m app.evals.dataset_builder export-review --dataset-dir <dataset_dir>
 
 1. 根据当前数据集生成可人工编辑的 `review_sheet.csv`。
 2. 同时生成 `review_guide.md`，用于说明审核字段和审核规则。
-
-
 
 **回填审核结果：**
 
@@ -650,7 +737,7 @@ python -m app.evals.dataset_builder apply-review --dataset-dir <dataset_dir> --r
 2. 回填后，后续 runner 可以按 `approved`、`pending` 等状态筛选样本。
 3. 如果只是先跑通链路，可以先跳过这一步，直接允许 `pending` 样本参与测评。
 
-### 12.5 执行真实 RAG 与评分
+### 13.5 执行真实 RAG 与评分
 
 **执行真实 RAG：**
 
@@ -675,8 +762,6 @@ python -m app.evals.live_rag_runner --dataset-dir <dataset_dir> --review-status 
 
 1. 生成一个新的 run 目录。
 2. run 目录中至少包含真实执行记录，例如 `records.jsonl`、`dataset_manifest.json` 等文件。
-
-
 
 **RAGAS 与检索评分：**
 
@@ -721,9 +806,9 @@ python -m app.evals.ragas_runner --dataset-dir <dataset_dir> --review-status app
 1. 想看中间执行结果、单独调试 run 记录时，优先使用 `live_rag_runner` + `ragas_scorer` 两步式流程。
 2. 想先跑一轮闭环验证时，优先使用 `ragas_runner`。
 
-## 13. 推荐命令组合
+## 14. 推荐命令组合
 
-### 13.1 最低人工成本的 smoke test
+### 14.1 最低人工成本的 smoke test
 
 ```bash
 python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
@@ -735,7 +820,7 @@ python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/
 1. 先验证整条链路能否跑通。
 2. 不急于得出正式质量结论。
 
-### 13.2 更接近真实问题分布的 quick check
+### 14.2 更接近真实问题分布的 quick check
 
 ```bash
 python -m app.evals.build_replay_dataset --name replay_quickcheck --version v1 --category exploration --limit 30 --reference-mode ai
@@ -747,7 +832,7 @@ python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/
 1. 先用真实历史问题验证评测链路。
 2. 后续再把高质量样本筛进 `baseline` 或 `regression`。
 
-### 13.3 已有外部样本的快速接入
+### 14.3 已有外部样本的快速接入
 
 ```bash
 python -m app.evals.import_seed_dataset --input seeds.jsonl --name seed_smoke --version v1 --category exploration --source-type manual --default-scope all
@@ -761,33 +846,29 @@ python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/
 
 ---
 
-## 14. 后续阶段路线图
+## 15. 后续阶段路线图
 
-### 14.1 Phase 2
+### 15.1 Phase 2
 
 1. 引入更稳定的数据集治理流程。
 2. 沉淀失败样本为 `regression`。
 3. 为高价值样本补齐 `reference_doc_ids` 和 `reference_contexts`。
 4. 增加专项实验集与更细的报表。
 
-### 14.2 Phase 3
+### 15.2 Phase 3
 
 1. 扩展到 Agent 真实轨迹评测。
 2. 评估工具调用与多轮链路。
 
-### 14.3 Phase 4
+### 15.3 Phase 4
 
 1. 将小规模 `regression` 集接入 CI 门禁。
 2. 为 `baseline` 建立版本对照和阈值管理。
 
 ---
 
-## 15. 参考资料
+## 16. 参考资料
 
 1. [RAGAS Evaluate and Improve a RAG App](https://docs.ragas.io/en/stable/howtos/applications/evaluate-and-improve-rag/)
 2. [RAGAS Metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/)
 3. [RAGAS TestsetGenerator](https://docs.ragas.io/en/stable/references/generate/)
-
-
-
-

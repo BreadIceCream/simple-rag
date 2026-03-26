@@ -1,187 +1,295 @@
-# Simple RAG (检索增强生成) 系统
+﻿# Simple RAG（检索增强生成）系统
 
-[English Version](./README.md)      [前端项目](https://github.com/BreadIceCream/simple-rag-frontend)
+[English Version](./README.md) | [前端项目](https://github.com/BreadIceCream/simple-rag-frontend)
 
-基于 **LangChain**、**LangGraph** 和 **FastAPI** 开发的高级 **Agentic RAG** 系统后端服务，支持多模态文档检索。它具有智能反射状态机、混合检索策略（BM25 + 向量语义搜索 + RRF）、分层切分（Small-to-Big）和重排序（Re-ranking）功能，通过 SSE 流式传输提供高精度且无幻觉的对话体验。
+Simple RAG 是一个基于 **FastAPI**、**LangChain** 和 **LangGraph** 的 **Agentic RAG 后端系统**。项目覆盖了多格式文档接入、结构化切块、混合检索、重排、反思式回答生成、SSE 流式输出，以及一套基于 **真实 RAG 执行** 的 **RAGAS 评测链路**。
 
-更多详细信息，请查看 `docs` 目录。
+项目的设计原则很明确：在线问答和离线评测都应尽量复用真实检索与真实 Graph 主链路，而不是依赖 prompt-only 拼装或单纯的合成自评。因此，系统重点放在真实检索质量、可控的 Graph 行为和基于实际运行结果的评测闭环上。
 
-## 功能特性
+更详细的设计说明请查看 `docs/` 目录。
 
-- 🧠 **Agentic 反射图工作流**：基于 LangGraph 构建，具有用于自我反思、幻觉检查、有用性评估和问题重写（思考-重写循环）的认知状态机。
-- 🔄 **混合检索与 RRF 融合**：结合了 BM25 稀疏关键词检索和基于嵌入的稠密语义搜索，由互惠排名融合 (RRF) 统一。
-- 🍱 **智能分层切分**：利用父文档检索（Parent Document Retriever）模式，配备语言/格式感知的切分器（Markdown/HTML 标题、代码切分器）。
-- 🎯 **先进的重排序优化**：无缝集成 Qwen Reranker 和其他轻量级压缩器，进行深层语义抽象重排序。
-- 🌐 **多模态文档摄取**：为本地文件（PDF、HTML、Markdown、代码）和远程 Web URL 提供级联解析器。
-- ⚡ **高性能后端**：基于 FastAPI 的异步架构，由异步 SQLAlchemy 和 psycopg 连接池支持。
-- 📡 **实时 SSE 流式传输**：提供逐令牌的流式响应，具有智能错误恢复和 LangGraph Checkpoint 状态持久化。
+## 核心特征
 
-## 系统架构
+- **Agentic LangGraph 工作流**：将检索、直接回答、问题重写、幻觉检查、有效性检查、历史摘要组织成持久化状态机。
+- **混合检索**：结合向量检索与 BM25 类稀疏检索，并通过 RRF 融合提升召回稳定性。
+- **父子块分层检索**：父块保留语义完整性，子块提高召回粒度，兼顾回答质量与检索效率。
+- **结构感知文档接入**：Markdown、HTML、代码、PDF、Office 文档、网页 URL 采用不同加载和切块策略，而不是统一粗暴处理。
+- **可选重排层**：支持 Qwen Reranker 对最终父块候选进行二次排序。
+- **会话可恢复**：基于 PostgreSQL checkpointer 保存 LangGraph 状态，可在异常中断后恢复对话。
+- **SSE 实时流式输出**：支持 token 流、Graph 进度、最终答案与参考文档同步推送。
+- **真实 RAG 评测闭环**：支持数据集构建、真实执行、RAGAS 评分与检索指标汇总。
 
-### 核心组件
+## 核心组成
 
-1. **FastAPI & 路由层**
-   - `/api/documents`: 文档摄取和管理。
-   - `/api/retrieval`: 检索测试和参考文献绑定。
-   - `/api/conversation`: 具有 SSE 流式传输和历史记录管理的聊天接口。
-2. **文档处理与切分**
-   - 用于加载器（PDF、HTML、文本、WebBase）的责任链模式。
-   - 用于动态切分策略（Markdown/HTML/代码/通用）的注册表模式。
-3. **检索与向量库引擎**
-   - `EnhancedParentDocumentRetriever` + `HybridPDRetriever` 提供稳健的搜索。
-   - ChromaDB（向量库）和 LocalFileStore（键值库）用于级联索引。
-4. **反射式 LangGraph Agent**
-   - 通过 PostgresSaver 持久化状态（Checkpoints）。
-   - 包含以下节点：`retrieve`（检索）、`grade_documents`（评估文档）、`generate_answer`（生成答案）、`check_hallucination`（幻觉检查）、`check_usefulness`（有用性检查）、`rewrite_question`（问题重写）和 `summarize_conversation`（总结对话）。
+### 在线服务主链路
+
+1. `app/main.py` 负责初始化配置、数据库、Embedding、向量库、文档存储、加载器、切块器、检索器、重排器、Elasticsearch 和 LangGraph。
+2. `app/core/document_loader.py` 负责将本地文件和 URL 统一加载为 `Document`。
+3. `app/core/chunking.py` 负责结构化父块切分与子块切分。
+4. `app/core/retriever.py` 负责向量检索、ES 稀疏检索、父块回溯和混合融合。
+5. `app/core/reranker.py` 负责候选文档重排。
+6. `app/core/graph.py` 定义完整的回答生成、检索调用与自检回路。
+7. `app/routers/conversation.py` 在 Graph 之上暴露 SSE 对话接口。
+
+### 离线评测主链路
+
+1. `app/evals/build_replay_dataset.py`、`build_synthetic_dataset.py`、`import_seed_dataset.py` 负责从不同来源构建数据集。
+2. `app/evals/live_rag_runner.py` 负责对数据集逐条执行真实 RAG 系统。
+3. `app/evals/ragas_scorer.py` 负责执行 RAGAS 与检索指标评分。
+4. `app/evals/ragas_runner.py` 提供一键串联入口。
+5. 所有评测产物统一落在 `store/evals/datasets/` 和 `store/evals/experiments/`。
+
+## 技术亮点
+
+- **Graph 式纠偏闭环**：系统不是“检索一次然后回答一次”，而是可以在检索不相关、回答不可靠、回答无用时自动重写问题和重新生成。
+- **Parent Document Retriever 设计**：先检索细粒度子块，再回溯父块作为回答上下文，降低碎片化上下文带来的回答断裂。
+- **结构保真的切块策略**：Markdown 标题、HTML 标题和代码语言边界会被尽量保留，再做长度级递归切块。
+- **范围受控检索**：检索可以绑定到指定文件集合，这一能力同时服务于检索调试接口和对话 Graph。
+- **可持久化对话状态**：Graph 状态通过 PostgreSQL 持久化，便于恢复、调试和追踪。
+- **评测链路彻底解耦**：数据集构建与真实执行、评分分离，`replay`、`synthetic`、`seed` 可以共用同一条测评主链路。
+- **synthetic 生成稳态增强**：对重文件引入动态 batch 控制、低并发 RAGAS 执行、重试退避和自适应批次拆分，降低生成阶段连接异常概率。
+
+## 系统结构
+
+### 在线 RAG 主链路
+
+1. 从 `config.yml` 和环境变量加载配置。
+2. 初始化数据库、Embedding、向量库和父文档存储。
+3. 初始化加载器、切块器、检索器、重排器和 LangGraph。
+4. 对外提供文档接入、检索测试和对话接口。
+
+### 离线评测主链路
+
+1. 构建或导入评测数据集。
+2. 按需导出审核表并进行人工审核。
+3. 对数据集样本执行真实 RAG 系统。
+4. 使用 RAGAS 与检索指标对真实结果评分。
+5. 查看 `summary.json`、`report.md` 等评测产物。
+
+## 目录结构
+
+```text
+RAG/
+├── app/
+│   ├── main.py
+│   ├── config/
+│   ├── core/
+│   ├── crud/
+│   ├── evals/
+│   ├── exception/
+│   ├── models/
+│   └── routers/
+├── docs/
+│   ├── 项目说明文档.md
+│   ├── RAGAS集成方案.md
+│   └── Evals数据集审核说明.md
+├── store/
+│   ├── chroma_langchain_db/
+│   ├── parent_docs/
+│   └── evals/
+│       ├── datasets/
+│       └── experiments/
+├── test_docs/
+├── v1/
+├── config.yml
+├── docker-compose.yml
+├── Dockerfile
+├── README.md
+└── README-zh.md
+```
+
+### `app/core` 目录说明
+
+- `document_loader.py`：多格式文档与 URL 加载，统一 metadata。
+- `chunking.py`：父块和子块切分策略注册与分发。
+- `embeddings.py`：Embedding 后端初始化与切换。
+- `vector_store.py`：Chroma 向量库与本地父文档存储管理。
+- `retriever.py`：ES 稀疏检索、父文档检索、混合融合与检索范围控制。
+- `reranker.py`：候选文档重排。
+- `graph.py`：在线问答的 LangGraph 状态机。
+
+### `app/evals` 目录说明
+
+- `build_replay_dataset.py`
+- `build_synthetic_dataset.py`
+- `import_seed_dataset.py`
+- `dataset_builder.py`
+- `live_rag_runner.py`
+- `ragas_runner.py`
+- `ragas_scorer.py`
+- `retrieval_scorer.py`
+- `metrics_registry.py`
+- `reporter.py`
+- `runtime.py`
+- `schema.py`
+
+每个文件的详细职责与命令说明见：[docs/RAGAS集成方案.md](./docs/RAGAS集成方案.md)
 
 ## 技术栈
 
-- **核心框架**: Python 3.12+ | FastAPI | LangChain | LangGraph
-- **数据库与 ORM**: PostgreSQL | SQLAlchemy (async) | psycopg (pool) | ChromaDB
-- **AI/NLP**: HuggingFace(Qwen) / OpenAI Embeddings | Qwen Reranker | NLTK + jieba
+- **语言**：Python 3.12+
+- **后端**：FastAPI
+- **RAG 框架**：LangChain、LangGraph
+- **数据库**：PostgreSQL、SQLAlchemy (async)、psycopg
+- **稀疏检索**：Elasticsearch
+- **向量库**：ChromaDB
+- **模型能力**：HuggingFace 或 OpenAI 兼容后端
+- **重排**：Qwen Reranker
+- **评测**：RAGAS
 
-## 安装与配置
+## 安装与运行
 
 ### 环境要求
 
-- Python 3.12+。
-- PostgreSQL 数据库实例。
-- PyTorch (可选 CUDA 支持)。
-- 以下软件包依赖。
+- Python 3.12+
+- PostgreSQL
+- Elasticsearch
+- PyTorch
+- `requirements.txt` 中的依赖
 
-### 依赖安装
+### 安装依赖
 
-见 `requirements.txt`
 ```bash
 pip install -r requirements.txt
 ```
 
-### 环境变量配置
-
-复制并配置 `.env-backup` 文件为 `.env`，或调整 `config.yml` 内的属性：
-
-```yaml
-# config.yml 亮点：
-database:
-  url: postgresql+asyncpg://user:password@localhost:5432/simple_rag
-
-chat_model:
-  default: gpt-5-mini           # 响应生成的主要模型
-  light: gpt-4o-mini            # 用于评估/反射的轻量级 LLM
-
-embedding:
-  model: Qwen/Qwen3-Embedding-0.6B
-
-retriever:
-  final_k: 8
-  reranker:
-    enabled: true
-```
-
-## 使用说明
-
-### 启动系统
+### 启动服务
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-### 执行流程
+### 主要 API 路径
 
-1. **初始化阶段（应用启动）**
-   - 从 `config.yml` 和 `.env` 加载环境变量。
-   - 初始化数据库连接池和向量库实例。
-   - 初始化文档加载器链、文本切分器注册表和检索器。
-   - 设置嵌入和重排序模型。
-   - 编译 LangGraph StateGraph 引擎。
-2. **交互阶段**
-   - 通过 POST `/api/documents/local` 或 `/api/documents/url` **摄取文档**。
-   - 使用 POST `/api/retrieval/references` **设置参考文献**。
-   - 通过 POST `/api/conversation/chat` **通过 SSE 聊天**，接收令牌流和对话状态。
+- `/api/documents`：文档导入与管理
+- `/api/retrieval`：检索测试与参考范围绑定
+- `/api/conversation`：SSE 对话接口
 
-### 文档加载
+## 配置说明
 
-支持多种文档加载方式：
-- 调用 API 端点 `/api/documents/local` 上传并摄取本地文件类型。
-- 系统会动态选择加载器（如 PDFLoader、HTMLLoader）并通过注册的文本切分器（如 MarkdownTextSplitter、CodeTextSplitter）对内容进行切分，最后自动将嵌入存储在 ChromaDB 中，将父级块存储在 LocalFileStore 中。
+当前项目通过 `config.yml` 控制主要运行参数。
 
-### 模式说明
-系统通过 LLM 工具调用（tool-calling）智能地决定是利用检索工具还是直接返回响应。
+### `config.yml` 关键配置
 
-## 技术细节
+```yaml
+env_override: false
 
-### 文本预处理与切分
+database:
+  url: postgresql+asyncpg://postgres:pg123456@localhost:5432/simple_rag
 
-- 上下文感知切分：MarkdownHeaderTextSplitter、HTMLHeaderTextSplitter、针对语言的 RecursiveCharacterTextSplitter，以获得最佳的嵌入表示。
-- 中英文双语文本预处理，使用 `jieba` 和 `nltk` 停用词语义过滤进行 BM25 处理。
+elasticsearch:
+  url: https://localhost:9200
+  username: elastic
 
-### 检索策略
+chat_model:
+  default: gpt-4o-mini
+  light: gpt-4o-mini
 
-1. **父文档检索（Parent Document Retriever）**：分离大文档（父级）和小语义块（子级）。
-2. **混合搜索**：合并稀疏关键词（BM25）和稠密向量检索。
-3. **RRF 融合**：对合并后的列表重新排名，减轻领域偏见。
-4. **交叉编码器重排序（Cross-Encoder Re-ranking）**：利用 Qwen Reranker 进行最终精度调整。
+embedding:
+  model: Qwen/Qwen3-Embedding-0.6B
+  openai:
+    enabled: false
+  huggingface_remote_inference:
+    enabled: false
 
-### LangGraph Agent 状态机
+chunking:
+  parent:
+    chunk_size: 1000
+    chunk_overlap: 120
+  child:
+    chunk_size: 256
+    chunk_overlap: 50
 
-Agent 决定是完成直接查询还是检索文档。如果检索到的文档不相关，LLM 会自动重写查询。生成的答案会经过幻觉和有用性的双重检查；失败会触发内部循环（生成 -> 检查 -> 重写），直到达到最大重试阈值。
+vector_store:
+  collection_name: default
 
-## 文件结构
+retriever:
+  final_k: 8
+  reranker:
+    enabled: true
 
+chat:
+  max_rewrite_time: 2
+  max_generate_time: 3
+  conversation_summarize_threshold: 10
+
+text_file_length_threshold: 1500
+
+debug:
+  enabled: true
+  docling_front: true
+  trafilatura_front: true
+  graph_visualization: false
 ```
-RAG/
-├── app/                          
-│   ├── main.py                   # FastAPI 应用入口
-│   ├── config/                   # 全局和数据库配置
-│   ├── core/                     # 核心引擎（加载器、切分、检索、图）
-│   ├── crud/                     # PostgreSQL 操作
-│   ├── routers/                  # API 端点（文档、检索、聊天）
-│   ├── models/                   # 模式、VO、图状态
-│   └── exception/                # 异常处理
-│  
-├── docs/ 						  # 参考文档
-│
-├── .env-backup                   # 环境变量备份
-├── config.yml                    # 项目配置文件
-├── Dockerfile                    # Docker 部署
-├── README.md                     # 英文文档
-└── README-zh.md                  # 中文文档
+
+### 配置重点
+
+- `database`：数据库与 checkpoint 持久化基础。
+- `elasticsearch`：稀疏检索后端配置。
+- `chat_model`：默认回答模型与轻量控制模型。
+- `embedding`：Embedding 模型来源。
+- `chunking`：父块与子块大小及重叠配置。
+- `retriever`：最终返回数量与是否启用重排。
+- `chat`：问题重写、回答重试与历史摘要阈值。
+- `debug`：文档加载和 graph 调试开关。
+
+## RAGAS 评测
+
+当前项目已经集成了基于 **真实执行** 的 RAGAS 评测链路：
+
+1. 先构建或导入评测数据集。
+2. 再调用真实 RAG 系统执行。
+3. 最后对真实运行结果做 RAGAS 与检索指标评分。
+
+### 支持的数据集类型
+
+- `replay`：从历史会话构建
+- `synthetic`：从知识库父块生成
+- `seed`：从人工或外部样本导入
+
+### 最简单的 smoke test
+
+```bash
+python -m app.evals.build_synthetic_dataset --name synthetic_smoke --version v1 --category exploration --size 20 --doc-limit 10 --use-light-model
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --limit 10 --review-status pending,approved
 ```
 
-## 扩展开发
+### 可选的人审流程
 
-### 添加新工具与功能
-1. 将新功能集成为独立的 FastAPI 路由。
-2. 对于图扩展，在 `app/core/graph.py` 中添加新节点或修改条件边，并在 LangGraph 状态机内部实现相应的业务逻辑。
+```bash
+python -m app.evals.dataset_builder export-review --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1
+python -m app.evals.dataset_builder apply-review --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-file store/evals/datasets/exploration/synthetic_smoke/v1/review_sheet.csv
+```
 
-### 自定义加载器或切分器
-继承 `DocumentLoader` 以支持新的 MIME 类型，并在 `DocumentLoaderChain` 中注册它们。
-通过 `SplitterRegistry` 注册自定义文本切分逻辑。
+### 两步式执行流程
 
-## 故障排除
+```bash
+python -m app.evals.live_rag_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-status pending,approved
+python -m app.evals.ragas_scorer --run-dir <run_dir>
+```
 
-### 常见问题
+### 一键串联入口
 
-1. **数据库连接失败**：确保 PostgreSQL 正在运行且凭据与 `config.yml` 匹配。
-2. **CUDA 不可用**：应用会自动回退到 CPU 以使用原生 HuggingFace 嵌入。
-3. **图循环超过最大限制**：在配置中降低 `max_rewrite_time` 和 `max_generate_time`。
+```bash
+python -m app.evals.ragas_runner --dataset-dir store/evals/datasets/exploration/synthetic_smoke/v1 --review-status pending,approved
+```
 
-## 更新日志
+### 评测产物位置
 
-### v1.0
+- 数据集目录：`store/evals/datasets/...`
+- 评测运行目录：`store/evals/experiments/...`
+- 常见产物：`manifest.json`、`samples.jsonl`、`review_sheet.csv`、`records.jsonl`、`summary.json`、`report.md`
 
-- 实现了基本 RAG 系统。
-- 混合检索功能。
-- 工具调用集成。
-- 异步处理优化。
+完整方案、字段设计和脚本说明见：[docs/RAGAS集成方案.md](./docs/RAGAS集成方案.md)
 
-### v2.0 (当前版本)
-- 全面重构为 FastAPI 后端服务。
-- 实现了 LangGraph 自我反思 Agent 架构。
-- 用混合 PDRetriever (BM25 + 向量 + RRF + PDRetrieve + Rerank) 取代了基本的 RAG 策略。
-- 将状态迁移到异步持久化 (SQLAlchemy + PostgresSaver)。
-- 用 SSE 流式 REST API 端点取代了 CLI 聊天。
+## 常见问题
+
+1. **数据库连接失败**：检查 `config.yml` 中的 PostgreSQL 连接字符串。
+2. **Elasticsearch 不可用**：检查 ES 地址、认证信息和本地证书配置。
+3. **Embedding 或模型加载失败**：检查本地模型依赖和环境变量配置。
+4. **评测时出现连接错误**：可降低 synthetic 生成并发，或直接使用 `build_synthetic_dataset` 内置的低并发配置。
+5. **Graph 内循环过多**：调整 `chat.max_rewrite_time` 与 `chat.max_generate_time`。
 
 ## 贡献
 
-欢迎贡献！请提交 Issue 和 Pull Request 以改进项目。
+欢迎提交 Issue 和 Pull Request。
