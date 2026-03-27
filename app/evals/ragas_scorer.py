@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from statistics import mean
@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 
 from app.config.global_config import global_config
 from app.evals.metrics_registry import select_ragas_metrics
-from app.evals.reporter import load_run_records, write_item_scores_csv, write_summary
+from app.evals.reporter import (
+    load_run_records,
+    write_item_scores_csv,
+    write_report_markdown,
+    write_summary,
+)
 from app.evals.retrieval_scorer import score_retrieval_metrics
 from app.evals.runtime import close_eval_runtime, init_eval_runtime
 
@@ -42,11 +47,13 @@ def _load_models(llm_name: str):
     embeddings = EmbeddingModelFactory.init_embedding_model()
     try:
         from ragas.llms import LangchainLLMWrapper
+
         llm_obj = LangchainLLMWrapper(llm)
     except Exception:
         llm_obj = llm
     try:
         from ragas.embeddings import LangchainEmbeddingsWrapper
+
         embeddings_obj = LangchainEmbeddingsWrapper(embeddings)
     except Exception:
         embeddings_obj = embeddings
@@ -147,24 +154,32 @@ def main() -> None:
             row.update({k: v for k, v in retrieval_row_map.get(row["sample_id"], {}).items() if k != "sample_id"})
             row.update({k: v for k, v in correctness_row_map.get(row["sample_id"], {}).items() if k != "sample_id"})
 
-        metric_avg = {}
+        metric_avg: dict[str, list[float]] = {}
         for row in item_rows:
             for key, value in row.items():
                 if key == "sample_id" or value is None or isinstance(value, str):
                     continue
                 metric_avg.setdefault(key, []).append(float(value))
+
+        latency_values = [float(record.latency_ms) for record in records if record.latency_ms is not None]
+        failed_records = [record for record in records if record.status != "success"]
         summary = {
             "run_dir": args.run_dir,
-            "sample_count": len(successful_records),
+            "total_sample_count": len(records),
+            "scored_sample_count": len(successful_records),
+            "failed_sample_count": len(failed_records),
             "metrics": metrics_selection.metric_names,
             "skipped_metrics": metrics_selection.skipped,
             "metric_avg": {key: mean(values) for key, values in metric_avg.items() if values},
             "retrieval_summary": retrieval_summary,
             "correctness_summary": correctness_summary,
+            "avg_latency_ms": mean(latency_values) if latency_values else None,
+            "failed_sample_ids": [record.sample_id for record in failed_records],
         }
         write_item_scores_csv(args.run_dir, item_rows)
         write_summary(args.run_dir, summary)
-        print(f"SCORER: wrote item scores and summary to {args.run_dir}")
+        write_report_markdown(args.run_dir, summary, item_rows, records)
+        print(f"SCORER: wrote item_scores.csv, summary.json, and report.md to {args.run_dir}")
     finally:
         close_eval_runtime()
 

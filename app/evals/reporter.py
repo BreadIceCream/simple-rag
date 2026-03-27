@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import json
@@ -78,4 +78,101 @@ def write_item_scores_csv(run_dir: str | Path, rows: list[dict[str, Any]]) -> Pa
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    return output_path
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def write_report_markdown(
+    run_dir: str | Path,
+    summary: dict[str, Any],
+    item_rows: list[dict[str, Any]],
+    records: list[EvalRunRecord],
+) -> Path:
+    output_path = Path(run_dir) / "report.md"
+    dataset_name = records[0].dataset_name if records else "unknown"
+    dataset_version = records[0].dataset_version if records else "unknown"
+    category = records[0].category if records else "unknown"
+    total_count = len(records)
+    success_count = sum(1 for record in records if record.status == "success")
+    failed_records = [record for record in records if record.status != "success"]
+
+    lines: list[str] = []
+    lines.append("# Evaluation Report")
+    lines.append("")
+    lines.append("## Overview")
+    lines.append("")
+    lines.append(f"- Run Dir: `{Path(run_dir)}`")
+    lines.append(f"- Dataset: `{dataset_name}`")
+    lines.append(f"- Version: `{dataset_version}`")
+    lines.append(f"- Category: `{category}`")
+    lines.append(f"- Total Samples: `{total_count}`")
+    lines.append(f"- Successful Samples: `{success_count}`")
+    lines.append(f"- Failed Samples: `{len(failed_records)}`")
+    lines.append("")
+
+    metrics = summary.get("metric_avg") or {}
+    if metrics:
+        lines.append("## Average Metrics")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        for key in sorted(metrics.keys()):
+            lines.append(f"| `{key}` | {_format_metric(metrics[key])} |")
+        lines.append("")
+
+    retrieval_summary = summary.get("retrieval_summary") or {}
+    if retrieval_summary:
+        lines.append("## Retrieval Summary")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        for key in sorted(retrieval_summary.keys()):
+            lines.append(f"| `{key}` | {_format_metric(retrieval_summary[key])} |")
+        lines.append("")
+
+    correctness_summary = summary.get("correctness_summary") or {}
+    if correctness_summary:
+        lines.append("## Correctness Summary")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        for key in sorted(correctness_summary.keys()):
+            lines.append(f"| `{key}` | {_format_metric(correctness_summary[key])} |")
+        lines.append("")
+
+    skipped_metrics = summary.get("skipped_metrics") or []
+    if skipped_metrics:
+        lines.append("## Skipped Metrics")
+        lines.append("")
+        for item in skipped_metrics:
+            lines.append(f"- `{item}`")
+        lines.append("")
+
+    if failed_records:
+        lines.append("## Failed Samples")
+        lines.append("")
+        lines.append("| Sample ID | Error |")
+        lines.append("| --- | --- |")
+        for record in failed_records[:20]:
+            error_message = (record.error_message or "").replace("\n", " ").strip() or "-"
+            lines.append(f"| `{record.sample_id}` | {error_message} |")
+        if len(failed_records) > 20:
+            lines.append("")
+            lines.append(f"Only the first 20 failed samples are shown here. Total failed samples: `{len(failed_records)}`.")
+        lines.append("")
+
+    if item_rows:
+        lines.append("## Sample Scores")
+        lines.append("")
+        lines.append("See `item_scores.csv` for the full per-sample score table.")
+        lines.append("")
+
+    output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
     return output_path
