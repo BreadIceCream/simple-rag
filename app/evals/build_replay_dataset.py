@@ -2,6 +2,7 @@
 
 import argparse
 import random
+import re
 import time
 from typing import Any
 
@@ -39,6 +40,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="", help="optional explicit dataset directory")
     parser.add_argument("--llm-retries", type=int, default=3, help="retry count when generating AI reference answers")
     parser.add_argument("--retry-backoff-seconds", type=float, default=2.0, help="base backoff seconds between AI reference answer retries")
+    parser.add_argument("--classify-query-type", action="store_true", help="classify replay samples into query types")
+    parser.add_argument("--query-type-mode", choices=["heuristic"], default="heuristic", help="query type classifier mode")
     return parser.parse_args()
 
 
@@ -130,6 +133,69 @@ def _generate_reference_answers(samples: list[EvalSample], retries: int, retry_b
                 time.sleep(sleep_seconds)
 
 
+def _detect_query_type_heuristic(user_input: str, reference_doc_ids: list[str], scope_file_ids: list[str]) -> tuple[str, str, str, float, list[str]]:
+    text = str(user_input or "").strip().lower()
+    abstract_patterns = [
+        r"\bwhy\b",
+        r"\bhow\b",
+        r"\bcompare\b",
+        r"\bdifference\b",
+        r"\bsummar",
+        r"\boverview\b",
+        r"\bexplain\b",
+    ]
+    multi_patterns = [
+        r"\bbetween\b",
+        r"\brelationship\b",
+        r"\bimpact\b",
+        r"\bdepend\b",
+        r"\balso\b",
+    ]
+
+    reasons: list[str] = []
+    is_abstract = any(re.search(pattern, text) for pattern in abstract_patterns)
+    if is_abstract:
+        reasons.append("abstract_keyword")
+
+    unique_doc_count = len({str(item).strip() for item in (reference_doc_ids or []) if str(item).strip()})
+    unique_file_count = len({str(item).strip() for item in (scope_file_ids or []) if str(item).strip()})
+    multi_from_evidence = unique_doc_count >= 2 or unique_file_count >= 2
+    multi_from_query = any(re.search(pattern, text) for pattern in multi_patterns)
+    is_multi = multi_from_evidence or multi_from_query
+    if multi_from_evidence:
+        reasons.append("multi_evidence")
+    if multi_from_query:
+        reasons.append("multi_keyword")
+
+    hop_count = "multi" if is_multi else "single"
+    abstraction_level = "abstract" if is_abstract else "specific"
+    query_type = f"{hop_count}_hop_{abstraction_level}"
+
+    confidence = 0.55
+    if multi_from_evidence:
+        confidence += 0.2
+    if is_abstract:
+        confidence += 0.15
+    if multi_from_query:
+        confidence += 0.1
+    confidence = round(min(confidence, 0.95), 2)
+
+    return query_type, hop_count, abstraction_level, confidence, reasons
+
+
+def _classify_query_type(args: argparse.Namespace, pair: dict[str, Any]) -> tuple[str, str, str, str, float, list[str]]:
+    if not args.classify_query_type:
+        return "unknown", "unknown", "unknown", "unknown", 0.0, []
+    if args.query_type_mode != "heuristic":
+        raise ValueError(f"Unsupported query type mode: {args.query_type_mode}")
+    query_type, hop_count, abstraction_level, confidence, reasons = _detect_query_type_heuristic(
+        user_input=str(pair.get("user_input") or ""),
+        reference_doc_ids=list(pair.get("reference_doc_ids") or []),
+        scope_file_ids=list(pair.get("scope_file_ids") or []),
+    )
+    return query_type, hop_count, abstraction_level, "heuristic", confidence, reasons
+
+
 def main() -> None:
     args = _parse_args()
     init_eval_runtime("dataset_replay")
@@ -143,6 +209,7 @@ def main() -> None:
 
         samples: list[EvalSample] = []
         for pair in pairs:
+            query_type, hop_count, abstraction_level, query_type_source, query_type_confidence, query_type_reasons = _classify_query_type(args, pair)
             sample = EvalSample(
                 user_input=pair["user_input"],
                 reference_answer=pair["history_answer"],
@@ -152,6 +219,10 @@ def main() -> None:
                 difficulty_level=args.difficulty,
                 scenario_type=args.scenario,
                 source_type="replay",
+                query_type=query_type,
+                hop_count=hop_count,
+                abstraction_level=abstraction_level,
+                query_type_source=query_type_source,
                 tags=[args.category, "replay"],
                 review_status="pending",
                 metadata={
@@ -163,6 +234,9 @@ def main() -> None:
                     "reference_file_ids": pair["reference_file_ids"],
                     "source_file_count": pair["source_file_count"],
                     "source_file_id": pair["reference_file_ids"][0] if len(pair["reference_file_ids"]) == 1 else "",
+                    "query_type_mode": args.query_type_mode if args.classify_query_type else "disabled",
+                    "query_type_confidence": query_type_confidence,
+                    "query_type_reasons": query_type_reasons,
                 },
             )
             samples.append(sample)
@@ -182,6 +256,8 @@ def main() -> None:
                 "requested_limit": args.limit,
                 "llm_retries": args.llm_retries,
                 "retry_backoff_seconds": args.retry_backoff_seconds,
+                "classify_query_type": args.classify_query_type,
+                "query_type_mode": args.query_type_mode,
                 "review_note": "Replay datasets require manual review because historical answers may contain errors.",
             },
         )

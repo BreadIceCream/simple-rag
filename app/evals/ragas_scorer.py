@@ -116,6 +116,32 @@ def _score_correctness(records, llm) -> tuple[list[dict[str, Any]], dict[str, fl
     return rows, summary
 
 
+def _aggregate_by_query_type(records, item_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    query_type_by_sample = {record.sample_id: record.query_type for record in records}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in item_rows:
+        query_type = str(row.get("query_type") or query_type_by_sample.get(row.get("sample_id"), "unknown") or "unknown")
+        grouped.setdefault(query_type, []).append(row)
+
+    output: dict[str, Any] = {}
+    for query_type, rows in grouped.items():
+        metric_avg: dict[str, float] = {}
+        metric_values: dict[str, list[float]] = {}
+        for row in rows:
+            for key, value in row.items():
+                if key in {"sample_id", "query_type"} or value is None or isinstance(value, str):
+                    continue
+                metric_values.setdefault(key, []).append(float(value))
+        for key, values in metric_values.items():
+            if values:
+                metric_avg[key] = mean(values)
+        output[query_type] = {
+            "sample_count": len(rows),
+            "metric_avg": metric_avg,
+        }
+    return output
+
+
 def main() -> None:
     args = _parse_args()
     init_eval_runtime()
@@ -138,7 +164,7 @@ def main() -> None:
         ragas_rows = result.to_pandas().to_dict(orient="records") if hasattr(result, "to_pandas") else []
         item_rows: list[dict[str, Any]] = []
         for record, ragas_row in zip(successful_records, ragas_rows):
-            row = {"sample_id": record.sample_id}
+            row = {"sample_id": record.sample_id, "query_type": record.query_type}
             for key, value in ragas_row.items():
                 if key in {"user_input", "response", "retrieved_contexts", "reference"}:
                     continue
@@ -163,6 +189,8 @@ def main() -> None:
 
         latency_values = [float(record.latency_ms) for record in records if record.latency_ms is not None]
         failed_records = [record for record in records if record.status != "success"]
+        by_query_type = _aggregate_by_query_type(successful_records, item_rows)
+
         summary = {
             "run_dir": args.run_dir,
             "total_sample_count": len(records),
@@ -175,6 +203,7 @@ def main() -> None:
             "correctness_summary": correctness_summary,
             "avg_latency_ms": mean(latency_values) if latency_values else None,
             "failed_sample_ids": [record.sample_id for record in failed_records],
+            "by_query_type": by_query_type,
         }
         write_item_scores_csv(args.run_dir, item_rows)
         write_summary(args.run_dir, summary)

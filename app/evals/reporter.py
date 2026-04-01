@@ -117,6 +117,33 @@ def write_report_markdown(
     lines.append(f"- Failed Samples: `{len(failed_records)}`")
     lines.append("")
 
+    by_query_type = summary.get("by_query_type") or {}
+    if by_query_type:
+        lines.append("## Query Type Breakdown")
+        lines.append("")
+        lines.append("| Query Type | Sample Count |")
+        lines.append("| --- | ---: |")
+        for query_type in sorted(by_query_type.keys()):
+            sample_count = by_query_type.get(query_type, {}).get("sample_count", 0)
+            lines.append(f"| `{query_type}` | {sample_count} |")
+        lines.append("")
+
+        lines.append("## Metrics by Query Type")
+        lines.append("")
+        for query_type in sorted(by_query_type.keys()):
+            lines.append(f"### `{query_type}`")
+            lines.append("")
+            metric_avg = by_query_type.get(query_type, {}).get("metric_avg") or {}
+            if not metric_avg:
+                lines.append("No numeric metrics available for this query type.")
+                lines.append("")
+                continue
+            lines.append("| Metric | Value |")
+            lines.append("| --- | ---: |")
+            for key in sorted(metric_avg.keys()):
+                lines.append(f"| `{key}` | {_format_metric(metric_avg[key])} |")
+            lines.append("")
+
     metrics = summary.get("metric_avg") or {}
     if metrics:
         lines.append("## Average Metrics")
