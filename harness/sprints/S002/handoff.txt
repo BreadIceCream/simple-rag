@@ -1,28 +1,31 @@
 ﻿Current phase: implementation_done
 Active sprint: S002
-Goal: 完成 Phase B 的 query-type 专项 synthetic 生成链路（builder + synthesizers + validator）并支持专项配置实验。
+Goal: Validate S002 repair-mode updates for documentation completeness and scope boundary clarity.
 Current scope: T-005, T-006, T-007, T-008
 
 Read first:
 1. harness/runtime/state.json
 2. harness/progress/progress.txt
-3. harness/sprints/S002/contract.json
-4. harness/sprints/S002/verification.json
-5. harness/sprints/S002/generator_notes.md
-6. app/evals/build_querytype_dataset.py
-7. app/evals/querytype_synthesizers.py
-8. app/evals/querytype_validator.py
-9. docs/Evals命令文档.md
+3. harness/sprints/S002/human_review.json
+4. harness/sprints/S002/contract.json
+5. harness/sprints/S002/verification.json
+6. harness/sprints/S002/evaluator_report.md
+7. harness/sprints/S002/generator_notes.md
+8. docs/Evals命令文档.md
 
 Your task:
-- Validate S002 against V-005..V-008.
-- Confirm query distribution, synthesizer wrapper, validator behavior, and specialized experiment docs are executable and within scope.
+- Re-evaluate S002 after in-scope repair.
+- Focus on V-005 and V-008 findings from previous FAIL.
+- Confirm Phase B out-of-scope language now explicitly exists in docs.
+- Confirm S002 deliverables are coherently represented in the command document.
 
 Do not:
-- Modify implementation code unless protocol requires repair loop.
-- Expand into Phase C scorer/reporter redesign.
+- modify implementation code
+- expand scope beyond S002
+- create a new sprint
 
 Completion condition:
-- Update verification.json checks from pending to passed/failed/blocked.
-- Write evaluator_report.md with PASS/FAIL/BLOCKED and evidence.
-- Update state.json/progress.txt consistently.
+- update verification.json checks
+- write evaluator_report.md with PASS/FAIL/BLOCKED
+- update state.json and progress.txt
+- run validate_harness.ps1 before handoff

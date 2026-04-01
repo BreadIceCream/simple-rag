@@ -3,15 +3,14 @@ Active sprint: S002
 Current scope: T-005, T-006, T-007, T-008
 
 Last completed actions:
-- Added query-type specialized synthetic builder: app/evals/build_querytype_dataset.py.
-- Added synthesizer wrapper layer: app/evals/querytype_synthesizers.py.
-- Added query-type validator and integrated strict/warn handling: app/evals/querytype_validator.py.
-- Updated docs/Evals命令文档.md with Phase B specialized experiment commands (balanced + multihop_focus) and migration guidance.
-- Verified new CLI and module import checks for S002.
+- Executed in-scope repair loop HR-001 within Sprint S002 (no new sprint).
+- Fully rewrote `docs/Evals命令文档.md` to merge all S002 updates into a coherent command guide.
+- Added explicit Phase B out-of-scope statements: no retrieval metric redesign and no ragas_scorer/reporter redesign in S002.
+- Consolidated S002 documentation coverage for `build_querytype_dataset.py`, `querytype_synthesizers.py`, `querytype_validator.py`, query distribution profiles, validator modes, specialized experiment flow, and migration guidance.
 
 Open issues:
-- No known protocol blockers.
-- Full end-to-end dataset generation requires local runtime dependencies (DB/vector/docstore/LLM) and should be verified by evaluator.
+- Runtime environment dependency issue (`asyncpg`) may still block local E2E generation checks in this sandbox.
+- Requires evaluator re-validation for V-005 and V-008 after documentation repair.
 
 Next recommended step:
-- Evaluator validates S002 implementation against V-005..V-008 and decides PASS/FAIL.
+- Evaluator re-runs Sprint S002 verification and issues PASS/FAIL/BLOCKED.

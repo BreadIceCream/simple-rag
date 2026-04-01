@@ -1,0 +1,14 @@
+﻿{
+  "review_id": "HR-001",
+  "sprint_id": "S002",
+  "created_at": "2026-04-01T17:45:00+08:00",
+  "source": "user",
+  "scope_assessment": "in_scope",
+  "decision": "repair_mode",
+  "summary": "用户要求在当前 S002 内修复文档缺项，并完整更新 Evals命令文档，将 S002 的调整合并进去。",
+  "requested_changes": [
+    "修复 docs/Evals命令文档.md 中缺少的 Phase B out-of-scope 明确说明",
+    "对 docs/Evals命令文档.md 进行完整更新与合并，纳入 S002 的 querytype builder、synthesizer wrapper、validator 和 specialized experiment 命令"
+  ],
+  "status": "addressed"
+}

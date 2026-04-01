@@ -46,4 +46,18 @@
 
 ## Git Commit Hash
 
-- TODO
+- fed9af8
+
+
+## Repair Loop (HR-001)
+
+- Reworked `docs/Evals命令文档.md` into a coherent post-S002 command guide instead of an appended patchwork section.
+- Explicitly added Phase B out-of-scope text: no retrieval scorer redesign, no ragas_scorer/reporter redesign, no Phase C metric redesign in this sprint.
+- Merged S002 deliverables into the main doc flow:
+  - `build_querytype_dataset.py` full parameter table
+  - `querytype_synthesizers.py` and `querytype_validator.py` module responsibilities
+  - specialized experiment commands (`balanced`, `multihop_focus`, custom JSON)
+  - migration guidance from legacy `build_synthetic_dataset.py`
+  - environment dependency note for runtime issues (including `asyncpg` as an example)
+
+Repair scope remained in-scope to S002 (`T-005`, `T-008`) and did not modify scorer/reporter implementation.

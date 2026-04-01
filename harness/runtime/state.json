@@ -3,7 +3,7 @@
     "active_sprint":  "S002",
     "phase":  "implementation_done",
     "status":  "active",
-    "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
+    "last_updated_at":  "2026-04-01T18:02:00+08:00",
     "last_updated_by":  "generator",
     "current_scope":  [
                           "T-005",
@@ -11,9 +11,9 @@
                           "T-007",
                           "T-008"
                       ],
-    "last_commit":  "1363ced",
-    "last_evaluation":  "PASS",
-    "resume_from":  "Evaluator should validate S002 against contract and verification V-005..V-008.",
-    "repair_mode":  false,
-    "repair_source":  null
+    "last_commit":  "fed9af8",
+    "last_evaluation":  "FAIL",
+    "resume_from":  "Evaluator should validate S002 repair-mode updates with focus on V-005 and V-008.",
+    "repair_mode":  true,
+    "repair_source":  "user"
 }
