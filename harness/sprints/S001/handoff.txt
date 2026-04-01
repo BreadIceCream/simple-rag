@@ -1,0 +1,24 @@
+﻿Current phase: implementation_done
+Active sprint: S001
+Goal: implement Phase A of RAGAS 2.0 so query type can flow through schema, replay/seed dataset handling, live run records, and by-query-type reporting.
+Current scope: T-001, T-002, T-003, T-004
+
+Implementation summary:
+- T-001 done: schema query_type fields added with backward-compatible normalization/derivation.
+- T-002 done: replay query-type classification added as explicit opt-in CLI path.
+- T-003 done: query_type propagated into EvalRunRecord path and scorer/reporter now output by_query_type.
+- T-004 done: seed import supports explicit query_type field import/preservation without auto classification.
+
+Verification snapshot:
+- Compile check passed for updated eval modules.
+- Replay builder CLI help confirms new query-type flags.
+- Seed import smoke confirms query_type fields are retained in samples.jsonl.
+- Run-record-shaped scorer/reporter smoke produced query-type breakdown sections in report.
+
+Implementation commit:
+- 1363ced
+
+Evaluator next actions:
+- Run checks from harness/sprints/S001/verification.json.
+- Review by_query_type outputs in summary/report artifacts.
+- Decide PASS/FAIL/BLOCKED in evaluator_report.md and update verification check statuses.

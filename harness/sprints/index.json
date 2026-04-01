@@ -1,0 +1,9 @@
+﻿[
+  {
+    "sprint_id": "S001",
+    "goal": "完成 RAGAS 2.0 Phase A 的最小实现规划，使 query type 字段、replay 分类和分类型报表能够进入实现阶段。",
+    "status": "active",
+    "created_at": "2026-04-01T13:18:36.8295694+08:00",
+    "closed_at": null
+  }
+]

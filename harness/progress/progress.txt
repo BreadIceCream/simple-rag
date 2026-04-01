@@ -1,0 +1,24 @@
+﻿Current phase: implementation_done
+Active sprint: S001
+Current scope: T-001, T-002, T-003, T-004
+
+Last completed actions:
+- Implemented T-001 schema query_type fields in app/evals/schema.py with backward-compatible normalization/derivation for old samples and run records.
+- Implemented T-002 replay query-type classification opt-in in app/evals/build_replay_dataset.py via --classify-query-type and --query-type-mode heuristic.
+- Implemented T-003 end-to-end propagation and reporting: app/evals/live_rag_runner.py now writes query_type fields to EvalRunRecord, app/evals/ragas_scorer.py outputs by_query_type, app/evals/reporter.py renders query-type breakdown/metrics sections.
+- Implemented T-004 seed import pass-through in app/evals/import_seed_dataset.py for explicit query_type fields (no automatic seed classification).
+- Updated backlog todo states for T-001..T-004 to implemented.
+- Created implementation commit: 1363ced
+
+Verification evidence:
+- python -m py_compile app/evals/schema.py app/evals/build_replay_dataset.py app/evals/live_rag_runner.py app/evals/ragas_scorer.py app/evals/reporter.py app/evals/import_seed_dataset.py
+- python -m app.evals.build_replay_dataset --help (confirmed new CLI flags --classify-query-type and --query-type-mode)
+- python -m app.evals.import_seed_dataset --input tmp_seed_qtype.json --name seed_qtype_smoke --version v1 --category exploration --source-type manual --output-dir store/evals/datasets/exploration/seed_qtype_smoke/v1 (confirmed query_type fields preserved in output samples.jsonl)
+- Run-record-shaped smoke for scorer/reporter generated store/evals/experiments/s001_qtype_smoke/report.md with sections "Query Type Breakdown" and "Metrics by Query Type".
+
+Open issues:
+- Evaluator has not run verification.json checks yet.
+- Ragas full scoring against a real live run was not executed in this generator pass.
+
+Next recommended step:
+- Evaluator executes harness/sprints/S001/verification.json and decides PASS/FAIL/BLOCKED for S001.

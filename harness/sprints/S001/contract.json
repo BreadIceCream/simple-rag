@@ -1,0 +1,51 @@
+﻿{
+  "sprint_id": "S001",
+  "version": 1,
+  "created_by": "planner",
+  "created_at": "2026-04-01T13:28:00.0000000+08:00",
+  "goal": "完成 RAGAS 2.0 Phase A 的最小完整切片规划：让 query type 能进入 schema、replay / seed 数据集和真实评分报表主链路，并形成可直接交付 generator 的实现合同。",
+  "in_scope": [
+    "T-001",
+    "T-002",
+    "T-003",
+    "T-004"
+  ],
+  "out_of_scope": [
+    "新的 synthetic query type builder",
+    "multi-hop 专项检索指标",
+    "seed import 自动分类",
+    "Phase B 及以后工作"
+  ],
+  "implementation_rules": [
+    "不得扩展 build_synthetic_dataset.py 的 Phase B 功能",
+    "schema 变更必须兼容旧数据集和旧 run 记录",
+    "replay query type 分类必须为显式开启能力，默认行为保持兼容",
+    "seed import 在 S001 中只做显式字段导入与保留，不做自动分类",
+    "live_rag_runner 必须把样本中的 query type 信息透传到 EvalRunRecord 或提供等价可聚合策略",
+    "reporter 与 scorer 的改动必须以 by_query_type 聚合为主，不引入新的多跳检索算法"
+  ],
+  "delivery_metrics": [
+    "新增 query type 字段定义和默认策略",
+    "replay 构建器具备 query type 分类入口",
+    "seed import 能接入并保留 query type 字段",
+    "records.jsonl、评分摘要和 Markdown 报告支持分 query_type 输出"
+  ],
+  "verification_metrics": [
+    "schema 新旧样本兼容通过",
+    "replay 分类输出包含 query_type 相关字段",
+    "seed import 保留 query type 字段且旧输入兼容",
+    "基于真实 run-record 形状数据的 summary.json 和 report.md 含 by_query_type 结果"
+  ],
+  "required_artifacts": [
+    "更新后的 harness/backlog/todos.json",
+    "更新后的 harness/progress/progress.txt",
+    "harness/sprints/S001/generator_notes.md",
+    "harness/sprints/S001/evaluator_report.md",
+    "Git commit hash"
+  ],
+  "exit_criteria": [
+    "T-001、T-002、T-003、T-004 均进入 implemented 或 verified 状态后方可结束实现阶段",
+    "generator 完成后必须留下 generator_notes.md 和 last_commit",
+    "evaluator 必须依据 verification.json 给出 PASS/FAIL/BLOCKED 结论"
+  ]
+}

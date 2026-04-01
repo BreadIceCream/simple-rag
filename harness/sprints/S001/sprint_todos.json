@@ -1,0 +1,28 @@
+﻿{
+  "sprint_id": "S001",
+  "snapshot_at": "2026-04-01T13:28:00.0000000+08:00",
+  "todo_ids": [
+    "T-001",
+    "T-002",
+    "T-003",
+    "T-004"
+  ],
+  "items": [
+    {
+      "id": "T-001",
+      "title": "扩展离线评估 schema 以承载 query type"
+    },
+    {
+      "id": "T-002",
+      "title": "为 replay 数据集构建链路增加 query type 分类"
+    },
+    {
+      "id": "T-003",
+      "title": "打通 query type 到 run record 并输出分桶评分报告"
+    },
+    {
+      "id": "T-004",
+      "title": "为 seed import 提供 query type 字段接入"
+    }
+  ]
+}

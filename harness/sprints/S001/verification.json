@@ -1,0 +1,41 @@
+﻿{
+  "sprint_id": "S001",
+  "checks": [
+    {
+      "id": "V-001",
+      "related_todo": "T-001",
+      "type": "unit",
+      "description": "验证 schema 新字段的序列化、反序列化和旧样本兼容行为。",
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "V-002",
+      "related_todo": "T-002",
+      "type": "integration",
+      "description": "验证 replay 构建器在开启 query type 分类后能输出 query_type 相关字段，并在未开启时保持兼容。",
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "V-003",
+      "related_todo": "T-003",
+      "type": "integration",
+      "description": "验证 live_rag_runner 输出的 records.jsonl 已透传 query_type 信息，且 scorer/reporter 能基于真实 run-record 形状数据输出 by_query_type 聚合。",
+      "status": "pending",
+      "evidence": [],
+      "notes": "需要使用接近真实 records.jsonl 结构的数据，而不是仅验证独立 reporter 函数。"
+    },
+    {
+      "id": "V-004",
+      "related_todo": "T-004",
+      "type": "integration",
+      "description": "验证 seed import 能保留显式传入的 query_type 字段，并保持未提供这些字段的旧输入兼容。",
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    }
+  ]
+}

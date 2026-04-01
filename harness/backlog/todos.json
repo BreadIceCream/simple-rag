@@ -1,0 +1,105 @@
+﻿[
+    {
+        "id":  "T-001",
+        "title":  "扩展离线评估 schema 以承载 query type",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "在 app/evals/schema.py 中为数据集样本和 run record 增加 query type 相关字段，并保证序列化、反序列化和兼容旧样本行为正常。",
+        "acceptance_criteria":  [
+                                    "EvalSample 和 EvalRunRecord 支持 query_type、hop_count、abstraction_level、evidence_topology、reasoning_hops、query_type_source 字段",
+                                    "旧数据集中缺失新字段时仍可正常反序列化，并填入合理默认值",
+                                    "样本 normalize/to_dict/from_dict 不会丢失新字段"
+                                ],
+        "verification_steps":  [
+                                   "运行针对 schema 的序列化/反序列化验证",
+                                   "使用一个旧格式样本和一个新格式样本进行 smoke 验证"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S001",
+        "depends_on":  [
+
+                       ],
+        "notes":  "不得修改 build_synthetic_dataset.py 的行为。",
+        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-002",
+        "title":  "为 replay 数据集构建链路增加 query type 分类",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "扩展 app/evals/build_replay_dataset.py，为 replay 样本增加四类 query type 分类能力，并写入样本字段与 metadata。",
+        "acceptance_criteria":  [
+                                    "CLI 支持显式开启 replay query type 分类",
+                                    "生成的 replay 样本会写入 query_type 相关字段",
+                                    "分类来源、模式或置信度会记录到 metadata 中",
+                                    "未开启分类时现有 replay 行为保持兼容"
+                                ],
+        "verification_steps":  [
+                                   "检查新的 CLI 参数解析和默认兼容行为",
+                                   "使用最小 replay 样本集验证新字段写入"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S001",
+        "depends_on":  [
+                           "T-001"
+                       ],
+        "notes":  "Phase A 只处理 replay 分类，不引入新的 synthetic builder。",
+        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-003",
+        "title":  "打通 query type 到 run record 并输出分桶评分报告",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "扩展 app/evals/live_rag_runner.py、app/evals/ragas_scorer.py 和 app/evals/reporter.py，使 query_type 字段能从样本透传到 records.jsonl，并在 summary.json、report.md 中按 query_type 聚合。",
+        "acceptance_criteria":  [
+                                    "live_rag_runner 生成的 EvalRunRecord 包含 query_type 相关字段或等价可聚合信息",
+                                    "summary.json 新增 by_query_type 聚合结果",
+                                    "report.md 新增 query type breakdown 和分类型指标章节",
+                                    "使用真实 run-record 形状数据时，scorer/reporter 能直接读取并完成分桶统计"
+                                ],
+        "verification_steps":  [
+                                   "使用接近 live_rag_runner 输出形状的 records.jsonl 进行 scorer/reporter 验证",
+                                   "检查 summary.json 和 report.md 中是否存在 by_query_type 输出",
+                                   "验证 records.jsonl 中存在可用于分桶聚合的 query type 信息"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S001",
+        "depends_on":  [
+                           "T-001"
+                       ],
+        "notes":  "Phase A 不引入 multi-hop 新指标，只做 query type 透传和分类型聚合。",
+        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-004",
+        "title":  "为 seed import 提供 query type 字段接入",
+        "category":  "backend",
+        "priority":  "medium",
+        "description":  "扩展 app/evals/import_seed_dataset.py，使 seed 数据集能够显式导入并保留 query_type 相关字段，满足 Phase A 中现有数据集可分型的要求。",
+        "acceptance_criteria":  [
+                                    "seed import 支持读取 query_type、hop_count、abstraction_level、evidence_topology、reasoning_hops、query_type_source 字段",
+                                    "当输入未提供 query_type 字段时保持当前兼容行为，不强制自动分类",
+                                    "导入后的 samples.jsonl 能保留这些字段"
+                                ],
+        "verification_steps":  [
+                                   "使用最小 seed json/jsonl 样本验证 query type 字段保留",
+                                   "验证未提供 query type 字段的旧 seed 输入仍可导入"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S001",
+        "depends_on":  [
+                           "T-001"
+                       ],
+        "notes":  "S001 只做显式字段导入，不在 seed import 中增加自动分类。",
+        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
+        "last_updated_by":  "generator"
+    }
+]
