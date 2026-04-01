@@ -1,0 +1,31 @@
+﻿Current phase: implementation_done
+Active sprint: S003
+Goal: 修复 querytype synthetic 生成在 deterministic multi-hop cluster/relationship 缺失时的鲁棒性问题，交付可用性探测、非重试错误分类、query type 降级重分配、多文件处理边界和控制台诊断日志。
+Current scope: T-009, T-010, T-011, T-012
+
+Read first:
+1. harness/runtime/state.json
+2. harness/progress/progress.txt
+3. harness/sprints/S003/contract.json
+4. harness/sprints/S003/verification.json
+5. harness/sprints/S003/generator_notes.md
+6. app/evals/querytype_synthesizers.py
+7. app/evals/build_querytype_dataset.py
+8. docs/Evals命令文档.md
+
+Your task:
+- Validate S003 against V-009..V-012.
+- Confirm deterministic cluster-failure handling no longer performs blind retry.
+- Confirm required diagnostic console fields and metadata summaries exist.
+- Confirm --enable-multi-file behavior is executable and fallback is explicit.
+
+Do not:
+- modify implementation code
+- expand scope beyond S003
+- introduce Phase C scoring/reporting checks
+
+Completion condition:
+- update verification.json with V-009..V-012 outcomes and evidence
+- write evaluator_report.md with PASS/FAIL/BLOCKED
+- update state.json and progress.txt consistently
+- run validate_harness.ps1 before final handoff

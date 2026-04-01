@@ -28,6 +28,47 @@ QUERY_DISTRIBUTION_PROFILES: dict[str, dict[str, float]] = {
     },
 }
 
+_NON_RETRIABLE_CLUSTER_PATTERNS = (
+    "no relationships match the provided condition. cannot form clusters",
+    "no clusters found in the knowledge graph",
+    "cannot form clusters",
+)
+
+_RETRIABLE_PATTERNS = (
+    "connection error",
+    "timed out",
+    "temporarily unavailable",
+    "rate limit",
+)
+
+
+@dataclass
+class QueryTypeAvailabilityResult:
+    available_query_types: list[str]
+    unavailable_query_types: dict[str, str]
+    signals: dict[str, Any]
+
+
+@dataclass
+class QueryTypeReallocationEvent:
+    source_query_type: str
+    target_query_type: str
+    count: int
+    reason: str
+
+
+@dataclass
+class QueryTypeReallocationResult:
+    effective_counts: dict[str, int]
+    fallback_events: list[QueryTypeReallocationEvent]
+
+
+@dataclass
+class QueryTypeErrorClassification:
+    retriable: bool
+    category: str
+    reason: str
+
 
 def normalize_query_distribution(raw_distribution: dict[str, Any]) -> dict[str, float]:
     normalized: dict[str, float] = {}
@@ -82,6 +123,176 @@ def allocate_query_type_counts(total: int, distribution: dict[str, float]) -> di
         allocations[query_type] += 1
         assigned += 1
     return allocations
+
+
+def _collect_exception_messages(exc: BaseException) -> list[str]:
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+    messages: list[str] = []
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        message = str(current).strip().lower()
+        if message:
+            messages.append(message)
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
+    return messages
+
+
+def is_non_retriable_cluster_error(exc: BaseException) -> bool:
+    messages = _collect_exception_messages(exc)
+    for message in messages:
+        if any(pattern in message for pattern in _NON_RETRIABLE_CLUSTER_PATTERNS):
+            return True
+    return False
+
+
+def classify_querytype_error(exc: BaseException) -> QueryTypeErrorClassification:
+    if is_non_retriable_cluster_error(exc):
+        return QueryTypeErrorClassification(
+            retriable=False,
+            category="cluster_missing",
+            reason="knowledge_graph_relationship_or_cluster_unavailable",
+        )
+
+    messages = _collect_exception_messages(exc)
+    all_messages = " ".join(messages)
+    exc_name = exc.__class__.__name__.lower()
+    if any(pattern in all_messages for pattern in _RETRIABLE_PATTERNS) or exc_name in {
+        "apiconnectionerror",
+        "apitimeouterror",
+        "connecterror",
+        "readtimeout",
+        "timeoutexception",
+    }:
+        return QueryTypeErrorClassification(
+            retriable=True,
+            category="transient_runtime",
+            reason="connection_or_timeout_like_error",
+        )
+
+    return QueryTypeErrorClassification(
+        retriable=True,
+        category="unknown",
+        reason="fallback_to_retry_for_unknown_error",
+    )
+
+
+def probe_available_query_types(
+    *,
+    chunks: list[Any],
+    enable_multi_file: bool = False,
+) -> QueryTypeAvailabilityResult:
+    unique_parent_ids: set[str] = set()
+    unique_file_ids: set[str] = set()
+    populated_chunks = 0
+    for chunk in chunks:
+        text = str(getattr(chunk, "page_content", "") or "").strip()
+        if text:
+            populated_chunks += 1
+        metadata = dict(getattr(chunk, "metadata", {}) or {})
+        parent_id = str(metadata.get("parent_doc_id") or "").strip()
+        file_id = str(metadata.get("file_id") or "").strip()
+        if parent_id:
+            unique_parent_ids.add(parent_id)
+        if file_id:
+            unique_file_ids.add(file_id)
+
+    available: list[str] = ["single_hop_specific", "single_hop_abstract"]
+    unavailable: dict[str, str] = {}
+    parent_count = len(unique_parent_ids)
+    file_count = len(unique_file_ids)
+    chunk_count = len(chunks)
+
+    multi_specific_ready = parent_count >= 2 and populated_chunks >= 2
+    multi_abstract_ready = parent_count >= 2 and populated_chunks >= 3
+    if enable_multi_file:
+        multi_specific_ready = multi_specific_ready and file_count >= 2
+        multi_abstract_ready = multi_abstract_ready and file_count >= 2
+
+    if multi_specific_ready:
+        available.append("multi_hop_specific")
+    else:
+        unavailable["multi_hop_specific"] = "insufficient_multihop_evidence"
+
+    if multi_abstract_ready:
+        available.append("multi_hop_abstract")
+    else:
+        unavailable["multi_hop_abstract"] = "insufficient_multihop_cluster_signals"
+
+    return QueryTypeAvailabilityResult(
+        available_query_types=available,
+        unavailable_query_types=unavailable,
+        signals={
+            "chunk_count": chunk_count,
+            "populated_chunk_count": populated_chunks,
+            "parent_count": parent_count,
+            "file_count": file_count,
+            "enable_multi_file": enable_multi_file,
+        },
+    )
+
+
+def reallocate_query_type_counts(
+    requested_counts: dict[str, int],
+    available_query_types: set[str],
+) -> QueryTypeReallocationResult:
+    effective = {query_type: max(int(requested_counts.get(query_type, 0)), 0) for query_type in QUERY_TYPES}
+    fallback_events: list[QueryTypeReallocationEvent] = []
+
+    preference: dict[str, tuple[str, ...]] = {
+        "multi_hop_abstract": ("multi_hop_specific", "single_hop_abstract", "single_hop_specific"),
+        "multi_hop_specific": ("single_hop_specific", "single_hop_abstract"),
+        "single_hop_abstract": ("single_hop_specific",),
+        "single_hop_specific": (),
+    }
+
+    for query_type in QUERY_TYPES:
+        if query_type in available_query_types:
+            continue
+        pending = effective.get(query_type, 0)
+        if pending <= 0:
+            effective[query_type] = 0
+            continue
+        effective[query_type] = 0
+        assigned = False
+        for target in preference.get(query_type, ()):
+            if target not in available_query_types:
+                continue
+            effective[target] = effective.get(target, 0) + pending
+            fallback_events.append(
+                QueryTypeReallocationEvent(
+                    source_query_type=query_type,
+                    target_query_type=target,
+                    count=pending,
+                    reason="unavailable_for_batch",
+                )
+            )
+            assigned = True
+            break
+        if assigned:
+            continue
+        if available_query_types:
+            target = sorted(available_query_types)[0]
+            effective[target] = effective.get(target, 0) + pending
+            fallback_events.append(
+                QueryTypeReallocationEvent(
+                    source_query_type=query_type,
+                    target_query_type=target,
+                    count=pending,
+                    reason="fallback_to_any_available_type",
+                )
+            )
+
+    return QueryTypeReallocationResult(effective_counts=effective, fallback_events=fallback_events)
 
 
 def _load_synthesizer_class(class_name: str) -> type[Any] | None:

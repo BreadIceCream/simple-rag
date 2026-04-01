@@ -119,15 +119,15 @@
                                    "用小样本命令生成 specialized 数据集并检查 manifest metadata",
                                    "运行一次 build_synthetic_dataset.py 的兼容性 smoke 验证"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S002",
         "depends_on":  [
                            "T-001"
                        ],
         "notes":  "必须说明从 build_synthetic_dataset.py 迁移到新入口的策略。",
-        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T17:57:47.0040021+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-006",
@@ -146,15 +146,15 @@
                                    "验证 multi_hop_specific 和 multi_hop_abstract 在多跳偏重分布下占比提升",
                                    "检查异常路径下的错误信息是否包含 synthesizer 与 query_type 上下文"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S002",
         "depends_on":  [
                            "T-005"
                        ],
         "notes":  "RAGAS 版本适配逻辑只能在该封装层处理，避免散落。",
-        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T17:57:47.0040021+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-007",
@@ -173,15 +173,15 @@
                                    "在 build_querytype_dataset 中分别跑 warn 与 strict 模式，检查差异",
                                    "确认输出数据集中保留 validation 元信息用于人工审核"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S002",
         "depends_on":  [
                            "T-005"
                        ],
         "notes":  "Phase B 只做生成前校验，不改 scorer 指标体系。",
-        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T17:57:47.0040021+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-008",
@@ -200,8 +200,8 @@
                                    "核对 manifest metadata 中 experiment_config 与 distribution 记录",
                                    "检查文档中的命令可执行且顺序正确"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S002",
         "depends_on":  [
                            "T-005",
@@ -209,7 +209,116 @@
                            "T-007"
                        ],
         "notes":  "重点是专项集实验入口，不做 Phase C 报表改造。",
-        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
+        "last_updated_at":  "2026-04-01T17:57:47.0040021+08:00",
+        "last_updated_by":  "evaluator"
+    },
+    {
+        "id":  "T-009",
+        "title":  "为 querytype synthesizers 增加可用性探测与非重试错误分类",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "扩展 app/evals/querytype_synthesizers.py，新增 per-batch query type 可用性探测、deterministic cluster error 分类，以及 query type 配额重分配辅助能力，为 querytype synthetic 鲁棒性修复提供稳定基础。",
+        "acceptance_criteria":  [
+                                    "存在可复用的 query type 可用性探测接口，可基于当前 batch/chunks 判断 multi-hop query types 是否可请求",
+                                    "存在 non-retriable cluster error 分类能力，可识别 relationship/cluster 缺失类错误而不误判为网络重试错误",
+                                    "存在 deterministic 的 query type 配额重分配函数，并输出 fallback 事件说明",
+                                    "相关逻辑集中在 querytype_synthesizers.py，不向 build_querytype_dataset.py 泄漏 RAGAS 细节"
+                                ],
+        "verification_steps":  [
+                                   "使用受控输入验证 available/unavailable query types 判定结果",
+                                   "使用 cluster 缺失错误文本验证 non-retriable 分类",
+                                   "使用固定输入验证配额重分配结果 deterministic"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S003",
+        "depends_on":  [
+                           "T-006"
+                       ],
+        "notes":  "优先解决 multi_hop_specific 与 multi_hop_abstract 的可用性与降级问题。",
+        "last_updated_at":  "2026-04-01T20:22:00+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-010",
+        "title":  "在 querytype builder 中接入非重试路径、fallback 与控制台诊断日志",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "扩展 app/evals/build_querytype_dataset.py，在每个 sub-batch 生成前执行可用性探测与 query type 重分配，对 deterministic cluster failure 停止盲重试，并打印面向排障的控制台诊断日志。",
+        "acceptance_criteria":  [
+                                    "每个 sub-batch 在生成前会记录 requested_query_type_counts、available_query_types、effective_query_type_counts",
+                                    "cluster/relationship 缺失类错误不会再触发无意义重试，而是进入 fallback 或批次降级路径",
+                                    "控制台日志至少打印 file_id、file_name、sub_batch、chunk_count、requested_counts、available_query_types、fallback_events、error_classification、generated_counts",
+                                    "manifest metadata 会记录 availability_probe、fallback_events、effective_query_type_counts 或等价诊断摘要"
+                                ],
+        "verification_steps":  [
+                                   "复现 deterministic cluster-failure 路径，确认不再盲重试",
+                                   "检查控制台输出中存在要求的诊断字段",
+                                   "检查 manifest metadata 中存在诊断摘要"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S003",
+        "depends_on":  [
+                           "T-009"
+                       ],
+        "notes":  "本任务只改 querytype builder，不扩展到 scorer/reporter。",
+        "last_updated_at":  "2026-04-01T20:22:00+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-011",
+        "title":  "让 enable-multi-file 行为可执行且与合同边界一致",
+        "category":  "backend",
+        "priority":  "medium",
+        "description":  "为 build_querytype_dataset.py 的 --enable-multi-file 提供明确且可验证的行为。本 sprint 的目标是实现最小可执行的多文件批次模式；若条件不足以形成多文件 batch，必须打印明确诊断并以合同规定的方式回退。",
+        "acceptance_criteria":  [
+                                    "开启 --enable-multi-file 时，querytype generation 的 batch 组装逻辑会实际感知并尝试形成 multi-file batch，而不是仅写 metadata",
+                                    "如果无法形成 multi-file batch，会打印明确控制台日志并记录到 metadata，而不是静默退化",
+                                    "无论 multi-file 是否成功形成，行为都与 contract/out_of_scope 一致并可由 evaluator 验证",
+                                    "默认单文件模式保持兼容"
+                                ],
+        "verification_steps":  [
+                                   "使用 enable-multi-file 的小样本命令验证 batch 行为与日志",
+                                   "验证无法形成 multi-file batch 时存在明确 fallback 日志/metadata",
+                                   "验证未开启该 flag 时行为兼容"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S003",
+        "depends_on":  [
+                           "T-009",
+                           "T-010"
+                       ],
+        "notes":  "本 sprint 实现最小可执行多文件批次，不做更广泛的 multi-hop 评分改造。",
+        "last_updated_at":  "2026-04-01T20:22:00+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-012",
+        "title":  "更新命令与诊断文档以反映鲁棒性修复后的行为",
+        "category":  "docs",
+        "priority":  "medium",
+        "description":  "更新 docs/Evals命令文档.md，并在需要时补充 docs/QueryTypeSynthetic鲁棒性修复方案.md 的落地说明，使用户能够理解 probe、fallback、非重试错误分类、诊断日志和 enable-multi-file 的实际行为。",
+        "acceptance_criteria":  [
+                                    "Evals 命令文档说明 build_querytype_dataset 在 cluster 缺失时的处理策略与日志行为",
+                                    "文档说明 enable-multi-file 的实际行为、限制和排障路径",
+                                    "文档明确本 sprint 不涉及 Phase C scorer/reporter/retrieval metric redesign",
+                                    "提供至少一组用于复现和观察诊断日志的命令示例"
+                                ],
+        "verification_steps":  [
+                                   "检查文档中存在 probe/fallback/diagnostic logging/multi-file 说明",
+                                   "检查命令顺序和参数与 CLI 一致"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S003",
+        "depends_on":  [
+                           "T-010",
+                           "T-011"
+                       ],
+        "notes":  "重点是让运行者知道为什么某些 multi-hop batch 会降级，以及从控制台如何排障。",
+        "last_updated_at":  "2026-04-01T20:22:00+08:00",
         "last_updated_by":  "generator"
     }
 ]

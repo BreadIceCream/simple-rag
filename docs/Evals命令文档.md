@@ -352,3 +352,73 @@ python -m app.evals.ragas_scorer `
 
 专项 synthetic 构建依赖运行时组件（数据库/向量库/模型配置等）。
 如果执行 `build_querytype_dataset` 时出现依赖缺失（如 `asyncpg`），需要先补齐本地环境依赖后再做 E2E 验证。
+
+## 7. S003 鲁棒性修复（deterministic cluster failure）
+
+本节描述 S003 之后 `build_querytype_dataset.py` 的关键行为变化。
+
+### 7.1 修复点
+- 增加 per-batch query type 可用性探测（availability probe）。
+- 增加 deterministic cluster/relationship 缺失错误分类（non-retriable）。
+- 增加 query type 配额 deterministic fallback/reallocation。
+- 增加每个 sub-batch 的控制台诊断日志。
+- `--enable-multi-file` 不再是 metadata-only：会尝试构造 multi-file batch；若无法构造会显式输出 fallback 日志。
+
+### 7.2 non-retriable 错误处理
+当出现类似错误时：
+- `No relationships match the provided condition. Cannot form clusters.`
+- `No clusters found in the knowledge graph...`
+
+系统会识别为 non-retriable，不再盲重试同一路径，而会进入 fallback（优先降级到可用 query types）。
+
+### 7.3 诊断日志字段（控制台）
+每个 sub-batch 至少会输出这些字段：
+- `file_id`
+- `file_name`
+- `sub_batch`
+- `chunk_count`
+- `requested_counts`
+- `available_query_types`
+- `unavailable_query_types`
+- `effective_counts`
+- `fallback_events`
+- `error classification`（retriable/category/reason）
+- `generated_counts`
+
+### 7.4 metadata 诊断摘要
+`manifest.metadata` 中可查看：
+- `requested_query_type_counts`
+- `effective_query_type_counts`
+- `generated_query_type_counts`
+- `availability_probe_summary`
+- `fallback_event_summary`
+- `non_retriable_failure_summary`
+
+### 7.5 multi-file 行为
+开启 `--enable-multi-file` 后：
+- 系统会优先尝试把不同文件的 sub-batch 合并成 multi-file batch。
+- 若找不到可合并对象，会退回 single-file fallback，并输出明确日志和 metadata 标记。
+
+### 7.6 观察修复行为的示例命令
+```powershell
+python -m app.evals.build_querytype_dataset `
+  --name querytype_multihop_focus_s003 `
+  --version v1 `
+  --category specialized `
+  --size 40 `
+  --doc-limit 20 `
+  --query-distribution-profile multihop_focus `
+  --validator-mode warn `
+  --enable-multi-file `
+  --max-batch-retries 3
+```
+
+建议同时观察：
+- 控制台 `QUERYTYPE BATCH:` 行
+- 产物 `manifest.json` 中的 `availability_probe_summary` / `fallback_event_summary`
+
+### 7.7 仍不在本阶段范围
+S003 仍然不包含：
+- `retrieval_scorer.py` 指标体系重构
+- `ragas_scorer.py` / `reporter.py` 重构
+- Phase C 的 multi-hop 评分指标体系改造
