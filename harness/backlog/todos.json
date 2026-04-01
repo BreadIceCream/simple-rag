@@ -14,15 +14,15 @@
                                    "运行针对 schema 的序列化/反序列化验证",
                                    "使用一个旧格式样本和一个新格式样本进行 smoke 验证"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S001",
         "depends_on":  [
 
                        ],
         "notes":  "不得修改 build_synthetic_dataset.py 的行为。",
-        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T14:54:03.1388314+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-002",
@@ -40,15 +40,15 @@
                                    "检查新的 CLI 参数解析和默认兼容行为",
                                    "使用最小 replay 样本集验证新字段写入"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S001",
         "depends_on":  [
                            "T-001"
                        ],
         "notes":  "Phase A 只处理 replay 分类，不引入新的 synthetic builder。",
-        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T14:54:03.1388314+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-003",
@@ -67,15 +67,15 @@
                                    "检查 summary.json 和 report.md 中是否存在 by_query_type 输出",
                                    "验证 records.jsonl 中存在可用于分桶聚合的 query type 信息"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S001",
         "depends_on":  [
                            "T-001"
                        ],
         "notes":  "Phase A 不引入 multi-hop 新指标，只做 query type 透传和分类型聚合。",
-        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
-        "last_updated_by":  "generator"
+        "last_updated_at":  "2026-04-01T14:54:03.1388314+08:00",
+        "last_updated_by":  "evaluator"
     },
     {
         "id":  "T-004",
@@ -92,14 +92,124 @@
                                    "使用最小 seed json/jsonl 样本验证 query type 字段保留",
                                    "验证未提供 query type 字段的旧 seed 输入仍可导入"
                                ],
-        "status":  "implemented",
-        "passes":  false,
+        "status":  "verified",
+        "passes":  true,
         "sprint_id":  "S001",
         "depends_on":  [
                            "T-001"
                        ],
         "notes":  "S001 只做显式字段导入，不在 seed import 中增加自动分类。",
-        "last_updated_at":  "2026-04-01T14:19:11.6432738+08:00",
+        "last_updated_at":  "2026-04-01T14:54:03.1388314+08:00",
+        "last_updated_by":  "evaluator"
+    },
+    {
+        "id":  "T-005",
+        "title":  "新增 build_querytype_dataset.py 与 query distribution 入口",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "新增 app/evals/build_querytype_dataset.py，作为 Phase B 专项 synthetic 构建入口，支持 query distribution 配置、multi-hop 偏重策略和 specialized 数据集输出。",
+        "acceptance_criteria":  [
+                                    "存在新的 CLI 入口 python -m app.evals.build_querytype_dataset，且参数包含 query distribution 配置（json/file/profile）",
+                                    "默认 profile 为 multi-hop 偏重，重点覆盖 multi_hop_specific 与 multi_hop_abstract",
+                                    "manifest metadata 会落盘 requested_distribution 与 realized_distribution",
+                                    "build_synthetic_dataset.py 现有命令和默认行为保持兼容，不被破坏"
+                                ],
+        "verification_steps":  [
+                                   "运行 python -m app.evals.build_querytype_dataset --help 检查参数完整性",
+                                   "用小样本命令生成 specialized 数据集并检查 manifest metadata",
+                                   "运行一次 build_synthetic_dataset.py 的兼容性 smoke 验证"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S002",
+        "depends_on":  [
+                           "T-001"
+                       ],
+        "notes":  "必须说明从 build_synthetic_dataset.py 迁移到新入口的策略。",
+        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-006",
+        "title":  "新增 querytype_synthesizers.py 专项封装层",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "新增 app/evals/querytype_synthesizers.py，封装 RAGAS 0.4.3 的 query synthesizer 调用，统一映射四类 query_type，并强化 multi_hop_specific 与 multi_hop_abstract 生成能力。",
+        "acceptance_criteria":  [
+                                    "封装 SingleHopSpecific、MultiHopSpecific、MultiHopAbstract 的统一调用接口",
+                                    "提供项目侧 single_hop_abstract 适配策略，并输出标准 query_type 字段",
+                                    "支持按 query distribution 计算每类配额并回传生成统计",
+                                    "当 RAGAS API 不可用或签名变化时，报错信息集中且可定位"
+                                ],
+        "verification_steps":  [
+                                   "通过 build_querytype_dataset 触发封装层并确认四类 query_type 可产出",
+                                   "验证 multi_hop_specific 和 multi_hop_abstract 在多跳偏重分布下占比提升",
+                                   "检查异常路径下的错误信息是否包含 synthesizer 与 query_type 上下文"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S002",
+        "depends_on":  [
+                           "T-005"
+                       ],
+        "notes":  "RAGAS 版本适配逻辑只能在该封装层处理，避免散落。",
+        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-007",
+        "title":  "新增 query type validator 并接入专项生成流程",
+        "category":  "backend",
+        "priority":  "high",
+        "description":  "新增 app/evals/querytype_validator.py，对 query_type、hop_count、reasoning_hops 与证据结构进行校验，并在 build_querytype_dataset 中执行 strict/warn 策略。",
+        "acceptance_criteria":  [
+                                    "validator 可校验 query_type 是否属于四类集合",
+                                    "multi-hop 样本至少满足 2 个 reasoning hops 或等价证据要求",
+                                    "single-hop 样本出现多跳证据冲突时会被标记或剔除（受模式控制）",
+                                    "validation_summary 会写入 manifest metadata，样本层有 validation 状态/原因"
+                                ],
+        "verification_steps":  [
+                                   "构造最小合法与非法样本集，验证 validator 输出",
+                                   "在 build_querytype_dataset 中分别跑 warn 与 strict 模式，检查差异",
+                                   "确认输出数据集中保留 validation 元信息用于人工审核"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S002",
+        "depends_on":  [
+                           "T-005"
+                       ],
+        "notes":  "Phase B 只做生成前校验，不改 scorer 指标体系。",
+        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
+        "last_updated_by":  "generator"
+    },
+    {
+        "id":  "T-008",
+        "title":  "落地 specialized 配置实验入口与运行文档",
+        "category":  "docs",
+        "priority":  "medium",
+        "description":  "基于新的 querytype builder，提供可直接执行的 specialized 配置实验方案，至少包含 balanced 与 multihop_focus 两类分布，并更新命令文档。",
+        "acceptance_criteria":  [
+                                    "提供至少两种 query distribution 配置（balanced 与 multihop_focus）",
+                                    "给出可执行命令，能够生成 specialized 数据集并进入 live_rag_runner + ragas_scorer 流程",
+                                    "实验配置会记录到 manifest metadata（如 profile 名称、distribution、validator 模式）",
+                                    "文档明确 Phase B 范围内不涉及 retrieval/scorer 重构"
+                                ],
+        "verification_steps":  [
+                                   "分别运行两种分布配置的小样本构建命令",
+                                   "核对 manifest metadata 中 experiment_config 与 distribution 记录",
+                                   "检查文档中的命令可执行且顺序正确"
+                               ],
+        "status":  "implemented",
+        "passes":  false,
+        "sprint_id":  "S002",
+        "depends_on":  [
+                           "T-005",
+                           "T-006",
+                           "T-007"
+                       ],
+        "notes":  "重点是专项集实验入口，不做 Phase C 报表改造。",
+        "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
         "last_updated_by":  "generator"
     }
 ]

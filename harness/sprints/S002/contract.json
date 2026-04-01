@@ -1,0 +1,56 @@
+﻿{
+  "sprint_id": "S002",
+  "version": 1,
+  "created_by": "planner",
+  "created_at": "2026-04-01T15:39:30.0000000+08:00",
+  "goal": "完成 Phase B 的 query-type 专项 synthetic 生成链路规划，交付 build_querytype_dataset.py、synthesizer 封装和 query type validator，并支持多跳偏重配置实验。",
+  "in_scope": [
+    "T-005",
+    "T-006",
+    "T-007",
+    "T-008"
+  ],
+  "out_of_scope": [
+    "Phase C 的评分/报表重构",
+    "retrieval metric redesign（如 hop_hit@k、all_hops_hit@k）",
+    "full multi-hop scoring 机制改造",
+    "与 Phase B 无关的 evals 目录重构",
+    "替换或破坏现有 build_synthetic_dataset.py 的行为"
+  ],
+  "implementation_rules": [
+    "必须新增 app/evals/build_querytype_dataset.py，不能仅在 build_synthetic_dataset.py 中堆叠分支逻辑。",
+    "必须新增 app/evals/querytype_synthesizers.py 作为 RAGAS 0.4.3 synthesizer 适配层；RAGAS 版本差异处理集中在该文件。",
+    "必须新增 app/evals/querytype_validator.py，并在 build_querytype_dataset 主流程中集成 validator。",
+    "专项生成默认分布应偏重 multi_hop_specific 与 multi_hop_abstract，并支持通过参数覆盖。",
+    "必须提供从 build_synthetic_dataset.py 到 build_querytype_dataset.py 的迁移策略说明，且旧脚本默认行为保持不变。",
+    "如需抽取公共逻辑，必须保证 build_synthetic_dataset.py 现有 CLI 与输出结构兼容。",
+    "仅实现 Phase B 目标，禁止扩展到 scorer/reporter 指标体系重构。"
+  ],
+  "delivery_metrics": [
+    "可通过 python -m app.evals.build_querytype_dataset --help 看到 query distribution、multi-hop 配比和 validator 相关参数。",
+    "可生成 specialized 数据集且 manifest metadata 含 requested_distribution、realized_distribution、validation_summary、experiment_config。",
+    "在 multi-hop 偏重配置下（示例 0.1/0.1/0.4/0.4），生成样本中 multi_hop_specific + multi_hop_abstract 占比高于 single-hop 占比。",
+    "生成流程支持配置实验：至少支持 balanced 与 multihop_focus 两种分布配置。"
+  ],
+  "verification_metrics": [
+    "E2E: build_querytype_dataset 小样本构建成功并生成可审核数据集目录。",
+    "结构: 生成样本包含 query_type 字段，且 query_type 落在四类集合内。",
+    "规则: validator 能识别并处理 multi-hop/single-hop 约束（strict 或 warn 模式）。",
+    "兼容: build_synthetic_dataset.py 仍可按原有命令运行并保持输出行为。"
+  ],
+  "required_artifacts": [
+    "app/evals/build_querytype_dataset.py",
+    "app/evals/querytype_synthesizers.py",
+    "app/evals/querytype_validator.py",
+    "harness/backlog/todos.json",
+    "harness/sprints/S002/generator_notes.md",
+    "harness/sprints/S002/verification.json",
+    "harness/progress/progress.txt",
+    "Git commit hash"
+  ],
+  "exit_criteria": [
+    "T-005..T-008 均达到 implemented 并由 generator 记录实现说明。",
+    "verification.json 为每个 todo 准备了可执行检查项且状态可由 evaluator 收敛。",
+    "validate_harness.ps1 通过后方可交接给 generator。"
+  ]
+}

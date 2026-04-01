@@ -1,19 +1,19 @@
 ﻿{
     "project_id":  "RAG",
-    "active_sprint":  "S001",
+    "active_sprint":  "S002",
     "phase":  "implementation_done",
     "status":  "active",
-    "last_updated_at":  "2026-04-01T14:24:00.0000000+08:00",
+    "last_updated_at":  "2026-04-01T16:46:20.5256418+08:00",
     "last_updated_by":  "generator",
     "current_scope":  [
-                          "T-001",
-                          "T-002",
-                          "T-003",
-                          "T-004"
+                          "T-005",
+                          "T-006",
+                          "T-007",
+                          "T-008"
                       ],
     "last_commit":  "1363ced",
-    "last_evaluation":  null,
-    "resume_from":  "Run evaluator for Sprint S001 using harness/sprints/S001/verification.json and review by_query_type outputs in summary/report.",
+    "last_evaluation":  "PASS",
+    "resume_from":  "Evaluator should validate S002 against contract and verification V-005..V-008.",
     "repair_mode":  false,
     "repair_source":  null
 }

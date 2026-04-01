@@ -1,0 +1,28 @@
+﻿{
+  "sprint_id": "S002",
+  "snapshot_at": "2026-04-01T15:39:30.0000000+08:00",
+  "todo_ids": [
+    "T-005",
+    "T-006",
+    "T-007",
+    "T-008"
+  ],
+  "items": [
+    {
+      "id": "T-005",
+      "title": "新增 build_querytype_dataset.py 与 query distribution 入口"
+    },
+    {
+      "id": "T-006",
+      "title": "新增 querytype_synthesizers.py 专项封装层"
+    },
+    {
+      "id": "T-007",
+      "title": "新增 query type validator 并接入专项生成流程"
+    },
+    {
+      "id": "T-008",
+      "title": "落地 specialized 配置实验入口与运行文档"
+    }
+  ]
+}

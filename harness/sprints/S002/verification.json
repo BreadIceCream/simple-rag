@@ -1,0 +1,41 @@
+﻿{
+  "sprint_id": "S002",
+  "checks": [
+    {
+      "id": "V-005",
+      "related_todo": "T-005",
+      "type": "e2e",
+      "description": "验证 build_querytype_dataset.py 可按 query distribution 构建 specialized 数据集，并写出 requested/realized distribution。",
+      "status": "pending",
+      "evidence": [],
+      "notes": "必须使用真实脚本执行，不接受仅代码阅读。"
+    },
+    {
+      "id": "V-006",
+      "related_todo": "T-006",
+      "type": "integration",
+      "description": "验证 querytype_synthesizers 封装层能稳定生成四类 query_type，且 multi-hop 偏重配置下 multi_hop_specific + multi_hop_abstract 占比提升。",
+      "status": "pending",
+      "evidence": [],
+      "notes": "重点检查 multi_hop_specific 和 multi_hop_abstract 的生成占比与字段一致性。"
+    },
+    {
+      "id": "V-007",
+      "related_todo": "T-007",
+      "type": "integration",
+      "description": "验证 query type validator 的规则生效，strict/warn 模式下对非法样本的处理符合预期，并写入 validation_summary。",
+      "status": "pending",
+      "evidence": [],
+      "notes": "需要包含至少一组故意构造的非法样本验证。"
+    },
+    {
+      "id": "V-008",
+      "related_todo": "T-008",
+      "type": "manual",
+      "description": "验证 specialized 配置实验文档和命令可执行，至少覆盖 balanced 与 multihop_focus 两类分布，并明确 out-of-scope 边界。",
+      "status": "pending",
+      "evidence": [],
+      "notes": "文档必须可直接被下一位执行者按顺序运行。"
+    }
+  ]
+}
