@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import argparse
-import inspect
 import math
 import random
 import time
@@ -9,6 +8,8 @@ from datetime import datetime
 from typing import Any
 
 from langchain.chat_models import init_chat_model
+from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import BaseChatModel
 
 from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
@@ -111,36 +112,9 @@ def _allocate_chunk_budget(parent_counts: list[int], total_budget: int, alloc_al
     return quotas
 
 
-def _resolve_testset_generator(llm: Any, embeddings: Any):
+def _resolve_testset_generator(llm: BaseChatModel, embeddings: Embeddings):
     from ragas.testset import TestsetGenerator
-
-    try:
-        from ragas.llms import LangchainLLMWrapper
-
-        llm_obj = LangchainLLMWrapper(llm)
-    except Exception:
-        llm_obj = llm
-
-    try:
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-
-        embeddings_obj = LangchainEmbeddingsWrapper(embeddings)
-    except Exception:
-        embeddings_obj = embeddings
-
-    init_sig = inspect.signature(TestsetGenerator)
-    kwargs = {}
-    if "llm" in init_sig.parameters:
-        kwargs["llm"] = llm_obj
-    if "generator_llm" in init_sig.parameters:
-        kwargs["generator_llm"] = llm_obj
-    if "critic_llm" in init_sig.parameters:
-        kwargs["critic_llm"] = llm_obj
-    if "embeddings" in init_sig.parameters:
-        kwargs["embeddings"] = embeddings_obj
-    if "embedding_model" in init_sig.parameters:
-        kwargs["embedding_model"] = embeddings_obj
-    return TestsetGenerator(**kwargs) if kwargs else TestsetGenerator(llm_obj, embeddings_obj)
+    return TestsetGenerator.from_langchain(llm=llm, embedding_model=embeddings)
 
 
 def _build_ragas_run_config(args: argparse.Namespace):
@@ -156,7 +130,7 @@ def _build_ragas_run_config(args: argparse.Namespace):
     )
 
 
-def _init_generation_llm(model_name: str, args: argparse.Namespace):
+def _init_generation_llm(model_name: str, args: argparse.Namespace) -> BaseChatModel:
     kwargs: dict[str, Any] = {
         "timeout": max(1, args.llm_timeout),
         "max_retries": max(0, args.llm_max_retries),
@@ -408,7 +382,7 @@ def _iter_sub_batches(plan_item: dict[str, Any], effective_chunk_limit: int) -> 
 
 
 def _generate_samples_for_plan_item(
-    embeddings: Any,
+    embeddings: Embeddings,
     model_name: str,
     plan_item: dict[str, Any],
     args: argparse.Namespace,
@@ -493,7 +467,7 @@ def _is_connection_like_error(exc: BaseException) -> bool:
 
 
 def _generate_samples_with_retry(
-    embeddings: Any,
+    embeddings: Embeddings,
     model_name: str,
     plan_item: dict[str, Any],
     args: argparse.Namespace,
@@ -550,7 +524,7 @@ def _generate_samples_with_retry(
 
 def _initial_generate(
     generation_plan: list[dict[str, Any]],
-    embeddings: Any,
+    embeddings: Embeddings,
     model_name: str,
     args: argparse.Namespace,
     global_scope_file_ids: list[str],
@@ -673,7 +647,7 @@ def _sample_additional_chunks(plan_item: dict[str, Any], count: int, seed: int) 
 def _topup_samples(
     samples: list[EvalSample],
     generation_plan: list[dict[str, Any]],
-    embeddings: Any,
+    embeddings: Embeddings,
     model_name: str,
     args: argparse.Namespace,
     global_scope_file_ids: list[str],
