@@ -1,0 +1,11 @@
+﻿{
+  "sprint_id": "S003",
+  "snapshot_at": "2026-04-01T19:32:00+08:00",
+  "todo_ids": ["T-009", "T-010", "T-011", "T-012"],
+  "items": [
+    {"id": "T-009", "title": "为 querytype synthesizers 增加可用性探测与非重试错误分类"},
+    {"id": "T-010", "title": "在 querytype builder 中接入非重试路径、fallback 与控制台诊断日志"},
+    {"id": "T-011", "title": "让 enable-multi-file 行为可执行且与合同边界一致"},
+    {"id": "T-012", "title": "更新命令与诊断文档以反映鲁棒性修复后的行为"}
+  ]
+}

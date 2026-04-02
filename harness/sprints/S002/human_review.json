@@ -1,14 +1,17 @@
 ﻿{
-  "review_id": "HR-001",
-  "sprint_id": "S002",
-  "created_at": "2026-04-01T17:45:00+08:00",
-  "source": "user",
-  "scope_assessment": "in_scope",
-  "decision": "repair_mode",
-  "summary": "用户要求在当前 S002 内修复文档缺项，并完整更新 Evals命令文档，将 S002 的调整合并进去。",
-  "requested_changes": [
-    "修复 docs/Evals命令文档.md 中缺少的 Phase B out-of-scope 明确说明",
-    "对 docs/Evals命令文档.md 进行完整更新与合并，纳入 S002 的 querytype builder、synthesizer wrapper、validator 和 specialized experiment 命令"
-  ],
-  "status": "addressed"
+    "review_id":  "HR-002",
+    "sprint_id":  "S002",
+    "created_at":  "2026-04-01T18:20:00+08:00",
+    "source":  "user",
+    "scope_assessment":  "scope_change",
+    "decision":  "replan",
+    "summary":  "用户要求针对 querytype synthetic 生成中的 multi-hop cluster 失败做真正修复，包含可用性探测、降级重分配、非重试错误处理和控制台诊断日志。这超出已通过的 S002 合同范围，需要新 sprint 规划。",
+    "requested_changes":  [
+                              "修复 RAGAS multi-hop cluster 失败时的无意义重试",
+                              "在 build_querytype_dataset/querytype_synthesizers 中加入可用性探测与 query type 配额降级/重分配",
+                              "将 cluster/relationship 缺失类错误识别为 non-retriable 并输出诊断日志",
+                              "使 --enable-multi-file 参与实际 batch 设计或在新 sprint 中明确实现边界",
+                              "为失败 batch 打印 file_id、file_name、sub_batch、chunk 数、requested_counts、available_query_types、fallback 结果等控制台日志"
+                          ],
+    "status":  "open"
 }

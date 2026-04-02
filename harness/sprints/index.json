@@ -1,9 +1,23 @@
-﻿[
+[
   {
     "sprint_id": "S001",
     "goal": "完成 RAGAS 2.0 Phase A 的最小实现规划，使 query type 字段、replay 分类和分类型报表能够进入实现阶段。",
-    "status": "active",
+    "status": "passed",
     "created_at": "2026-04-01T13:18:36.8295694+08:00",
-    "closed_at": null
+    "closed_at": "2026-04-01T14:54:03.1388314+08:00"
+  },
+  {
+    "sprint_id": "S002",
+    "goal": "完成 RAGAS 2.0 Phase B 规划，交付 query-type 专项 synthetic 生成链路（builder + synthesizers + validator）并支持专项配置实验。",
+    "status": "passed",
+    "created_at": "2026-04-01T15:39:30.0000000+08:00",
+    "closed_at": "2026-04-01T17:57:47.0040021+08:00"
+  },
+  {
+    "sprint_id": "S003",
+    "goal": "修复 querytype synthetic 生成在 deterministic multi-hop cluster/relationship 缺失时的鲁棒性问题，增加可用性探测、降级重分配与控制台诊断日志。",
+    "status": "passed",
+    "created_at": "2026-04-01T19:16:10.6019349+08:00",
+    "closed_at": "2026-04-01T20:45:00+08:00"
   }
 ]

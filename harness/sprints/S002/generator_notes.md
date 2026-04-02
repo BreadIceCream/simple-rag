@@ -61,3 +61,7 @@
   - environment dependency note for runtime issues (including `asyncpg` as an example)
 
 Repair scope remained in-scope to S002 (`T-005`, `T-008`) and did not modify scorer/reporter implementation.
+
+- Repair loop commit hash: d107634
+
+

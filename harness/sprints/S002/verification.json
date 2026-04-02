@@ -1,41 +1,61 @@
 ﻿{
-  "sprint_id": "S002",
-  "checks": [
-    {
-      "id": "V-005",
-      "related_todo": "T-005",
-      "type": "e2e",
-      "description": "验证 build_querytype_dataset.py 可按 query distribution 构建 specialized 数据集，并写出 requested/realized distribution。",
-      "status": "pending",
-      "evidence": [],
-      "notes": "必须使用真实脚本执行，不接受仅代码阅读。"
-    },
-    {
-      "id": "V-006",
-      "related_todo": "T-006",
-      "type": "integration",
-      "description": "验证 querytype_synthesizers 封装层能稳定生成四类 query_type，且 multi-hop 偏重配置下 multi_hop_specific + multi_hop_abstract 占比提升。",
-      "status": "pending",
-      "evidence": [],
-      "notes": "重点检查 multi_hop_specific 和 multi_hop_abstract 的生成占比与字段一致性。"
-    },
-    {
-      "id": "V-007",
-      "related_todo": "T-007",
-      "type": "integration",
-      "description": "验证 query type validator 的规则生效，strict/warn 模式下对非法样本的处理符合预期，并写入 validation_summary。",
-      "status": "pending",
-      "evidence": [],
-      "notes": "需要包含至少一组故意构造的非法样本验证。"
-    },
-    {
-      "id": "V-008",
-      "related_todo": "T-008",
-      "type": "manual",
-      "description": "验证 specialized 配置实验文档和命令可执行，至少覆盖 balanced 与 multihop_focus 两类分布，并明确 out-of-scope 边界。",
-      "status": "pending",
-      "evidence": [],
-      "notes": "文档必须可直接被下一位执行者按顺序运行。"
-    }
-  ]
+    "sprint_id":  "S002",
+    "checks":  [
+                   {
+                       "id":  "V-005",
+                       "related_todo":  "T-005",
+                       "type":  "e2e",
+                       "description":  "验证 build_querytype_dataset.py 可按 query distribution 构建 specialized 数据集，并写出 requested/realized distribution。",
+                       "status":  "passed",
+                       "evidence":  [
+                                        "本轮复验按用户明确指令执行：不因当前 sandbox 环境缺少 `asyncpg` 而判定 S002 失败。",
+                                        "`python -m app.evals.build_querytype_dataset --help` 仍成功输出 query distribution、validator 和 multi-hop 配置参数，确认 Phase B builder 入口存在且 CLI 面符合合同。",
+                                        "上一轮失败点来自当前 sandbox 运行环境缺少 `asyncpg`，而非 Phase B 代码路径独有问题；同一环境下 `build_synthetic_dataset.py` 也在相同依赖位点失败。",
+                                        "基于用户提供的本地环境 assurance，本检查将 e2e runtime 依赖问题视为环境豁免项处理；本次未在该 sandbox 中重新验证 manifest `requested_distribution` / `realized_distribution` 的落盘。"
+                                    ],
+                       "notes":  "本检查在本轮复验中按环境豁免处理，通过不代表已在当前 sandbox 完成真实 specialized dataset 构建。"
+                   },
+                   {
+                       "id":  "V-006",
+                       "related_todo":  "T-006",
+                       "type":  "integration",
+                       "description":  "验证 querytype_synthesizers 封装层能稳定生成四类 query_type，且 multi-hop 偏重配置下 multi_hop_specific + multi_hop_abstract 占比提升。",
+                       "status":  "passed",
+                       "evidence":  [
+                                        "通过 stub generator 运行 `QueryTypeSynthesizerFacade.generate_rows(...)`，输出 `generated_counts={\u0027single_hop_specific\u0027: 1, \u0027single_hop_abstract\u0027: 1, \u0027multi_hop_specific\u0027: 2, \u0027multi_hop_abstract\u0027: 2}`。",
+                                        "同一验证中得到 `query_types=[\u0027multi_hop_abstract\u0027, \u0027multi_hop_specific\u0027, \u0027single_hop_abstract\u0027, \u0027single_hop_specific\u0027]`，确认四类 query type 均可产出。",
+                                        "通过 `allocate_query_type_counts(20, QUERY_DISTRIBUTION_PROFILES[\u0027balanced\u0027])` 得到 `5/5/5/5`；通过 `allocate_query_type_counts(20, QUERY_DISTRIBUTION_PROFILES[\u0027multihop_focus\u0027])` 得到 `2/2/8/8`，确认 multi-hop 偏重配置提升了 `multi_hop_specific + multi_hop_abstract` 占比。",
+                                        "source_map 输出为 `SingleHopSpecificQuerySynthesizer`、`MultiHopSpecificQuerySynthesizer`、`MultiHopAbstractQuerySynthesizer` 和 `project_single_hop_abstract_adapter`，符合封装层设计。"
+                                    ],
+                       "notes":  "该检查沿用已成立的集成证据。"
+                   },
+                   {
+                       "id":  "V-007",
+                       "related_todo":  "T-007",
+                       "type":  "integration",
+                       "description":  "验证 query type validator 的规则生效，strict/warn 模式下对非法样本的处理符合预期，并写入 validation_summary。",
+                       "status":  "passed",
+                       "evidence":  [
+                                        "使用 4 个手工样本执行 `QueryTypeValidator(mode=\u0027warn\u0027, min_hop_evidence=2)`，结果为 `input_count=4 output_count=4 dropped_count=0 error_count=2 warning_count=1`。",
+                                        "同一组样本执行 `QueryTypeValidator(mode=\u0027strict\u0027, min_hop_evidence=2)`，结果为 `input_count=4 output_count=2 dropped_count=2 error_count=2 warning_count=1`。",
+                                        "issue_code 统计包含 `insufficient_multihop_evidence`、`singlehop_conflict_evidence`、`specific_with_abstract_cue`，说明 multi-hop/single-hop 约束和抽象/具体提示词规则均生效。",
+                                        "strict 模式保留样本的 `metadata[\u0027validation\u0027][\u0027valid\u0027]` 均为 `True`，确认 validator 会把 validation 元信息写入样本 metadata。"
+                                    ],
+                       "notes":  "该检查沿用已成立的集成证据。"
+                   },
+                   {
+                       "id":  "V-008",
+                       "related_todo":  "T-008",
+                       "type":  "manual",
+                       "description":  "验证 specialized 配置实验文档和命令可执行，至少覆盖 balanced 与 multihop_focus 两类分布，并明确 out-of-scope 边界。",
+                       "status":  "passed",
+                       "evidence":  [
+                                        "修复后的 `docs/Evals命令文档.md` 已完整合并 S002 内容，包含 `build_querytype_dataset.py`、`querytype_synthesizers.py`、`querytype_validator.py`、query distribution profiles、validator modes、专项 experiment flow 和迁移策略。",
+                                        "文档第 328-337 行新增 `S002 迁移策略与边界` / `Phase B 明确 out-of-scope（本次修复补充）`，明确写出：不包含 `retrieval_scorer.py` 指标体系重构，不包含 `ragas_scorer.py`/`reporter.py` 评分类能力重构，不包含 Phase C 的 multi-hop 检索新指标改造。",
+                                        "专项命令流程仍保持连贯：`build_querytype_dataset -\u003e dataset_builder export/apply-review -\u003e live_rag_runner -\u003e ragas_scorer`，并同时覆盖 `balanced` 与 `multihop_focus` 两类分布示例。",
+                                        "repair metadata 一致：`harness/runtime/state.json` 的 `last_commit=d107634` 与 `git rev-parse --short HEAD` 一致，`harness/sprints/S002/human_review.json` 记录本轮为当前 sprint 的 `repair_mode` 且状态为 `addressed`。"
+                                    ],
+                       "notes":  "本轮复验聚焦文档修复，已确认 Phase B 边界声明和 S002 内容整合到位。"
+                   }
+               ]
 }

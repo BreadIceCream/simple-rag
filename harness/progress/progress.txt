@@ -1,16 +1,17 @@
-﻿Current phase: implementation_done
-Active sprint: S002
-Current scope: T-005, T-006, T-007, T-008
+Current phase: passed
+Active sprint: S003
+Current scope: T-009, T-010, T-011, T-012
 
 Last completed actions:
-- Executed in-scope repair loop HR-001 within Sprint S002 (no new sprint).
-- Fully rewrote `docs/Evals命令文档.md` to merge all S002 updates into a coherent command guide.
-- Added explicit Phase B out-of-scope statements: no retrieval metric redesign and no ragas_scorer/reporter redesign in S002.
-- Consolidated S002 documentation coverage for `build_querytype_dataset.py`, `querytype_synthesizers.py`, `querytype_validator.py`, query distribution profiles, validator modes, specialized experiment flow, and migration guidance.
+- Evaluator validated Sprint S003 against V-009..V-012 and the active sprint contract.
+- Verified deterministic query-type probe, non-retriable cluster error classification, and deterministic reallocation on controlled inputs.
+- Verified no blind retry on deterministic cluster/relationship absence errors, plus required QUERYTYPE BATCH console diagnostics and metadata summaries.
+- Verified --enable-multi-file now has executable mixed multi-file batching behavior with observable single-file fallback behavior.
+- Verified docs/Evals????.md reflects S003 runtime behavior and preserves Phase C out-of-scope boundaries.
 
 Open issues:
-- Runtime environment dependency issue (`asyncpg`) may still block local E2E generation checks in this sandbox.
-- Requires evaluator re-validation for V-005 and V-008 after documentation repair.
+- No blocking defects remain for Sprint S003 within the contract scope.
+- A py_compile attempt in this environment hit a local __pycache__ permission issue, but source compilation via Python compile(), CLI help, and runtime-smoke verification all succeeded; this did not block contract verification.
 
 Next recommended step:
-- Evaluator re-runs Sprint S002 verification and issues PASS/FAIL/BLOCKED.
+- Planner reviews the PASS result for Sprint S003 and decides sprint closure or the next sprint.

@@ -6,36 +6,49 @@
       "related_todo": "T-001",
       "type": "unit",
       "description": "验证 schema 新字段的序列化、反序列化和旧样本兼容行为。",
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "passed",
+      "evidence": [
+        "python inline assertions for EvalSample/EvalRunRecord old/new payloads -> V001_SCHEMA_COMPAT_OK"
+      ],
+      "notes": "Schema supports query_type fields and preserves backward compatibility for missing fields."
     },
     {
       "id": "V-002",
       "related_todo": "T-002",
       "type": "integration",
       "description": "验证 replay 构建器在开启 query type 分类后能输出 query_type 相关字段，并在未开启时保持兼容。",
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "passed",
+      "evidence": [
+        "python -m app.evals.build_replay_dataset --help includes --classify-query-type and --query-type-mode",
+        "python inline classifier checks -> V002_REPLAY_CLASSIFIER_OK"
+      ],
+      "notes": "Replay classification is explicit opt-in and disabled path remains compatible."
     },
     {
       "id": "V-003",
       "related_todo": "T-003",
       "type": "integration",
       "description": "验证 live_rag_runner 输出的 records.jsonl 已透传 query_type 信息，且 scorer/reporter 能基于真实 run-record 形状数据输出 by_query_type 聚合。",
-      "status": "pending",
-      "evidence": [],
-      "notes": "需要使用接近真实 records.jsonl 结构的数据，而不是仅验证独立 reporter 函数。"
+      "status": "passed",
+      "evidence": [
+        "Code inspection: app/evals/live_rag_runner.py writes query_type/hop_count/abstraction_level/evidence_topology/reasoning_hops/query_type_source into EvalRunRecord",
+        "python run-record-shaped aggregation/report smoke -> V003_QTYPE_REPORT_FLOW_OK",
+        "Artifacts: .tmp_eval/s001_eval_qtype_check/summary.json and .tmp_eval/s001_eval_qtype_check/report.md include by_query_type and query-type sections"
+      ],
+      "notes": "End-to-end path from run-record-shaped data to by_query_type summary/report is verified."
     },
     {
       "id": "V-004",
       "related_todo": "T-004",
       "type": "integration",
       "description": "验证 seed import 能保留显式传入的 query_type 字段，并保持未提供这些字段的旧输入兼容。",
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "passed",
+      "evidence": [
+        "python -m app.evals.import_seed_dataset with query-type payload -> tmp_eval/seed_qtype_eval_with",
+        "python -m app.evals.import_seed_dataset with legacy payload -> tmp_eval/seed_qtype_eval_without",
+        "python inline output assertions -> V004_SEED_IMPORT_QTYPE_OK"
+      ],
+      "notes": "Seed import preserves explicit query-type fields and keeps legacy no-query-type input behavior."
     }
   ]
 }

@@ -1,0 +1,61 @@
+{
+  "sprint_id": "S003",
+  "checks": [
+    {
+      "id": "V-009",
+      "related_todo": "T-009",
+      "type": "integration",
+      "description": "验证 querytype_synthesizers 的 availability probe、non-retriable cluster error 分类和 deterministic reallocation 能在受控输入上给出稳定结果。",
+      "status": "passed",
+      "evidence": [
+        "Controlled probe on two single-file chunks returned available_query_types=['single_hop_specific','single_hop_abstract','multi_hop_specific'] and unavailable_query_types={'multi_hop_abstract': 'insufficient_multihop_cluster_signals'}.",
+        "With enable_multi_file=True on the same chunks, probe returned only single-hop types, confirming the probe reacts deterministically to file-count constraints.",
+        "classify_querytype_error(ValueError('No relationships match the provided condition. Cannot form clusters.')) returned retriable=False, category='cluster_missing'.",
+        "reallocate_query_type_counts(...) returned the same effective_counts and fallback_events across repeated runs, confirming deterministic behavior."
+      ],
+      "notes": "Probe, non-retriable classification, and reallocation helpers behave deterministically on controlled inputs."
+    },
+    {
+      "id": "V-010",
+      "related_todo": "T-010",
+      "type": "e2e",
+      "description": "复现 deterministic cluster-failure 路径并验证 build_querytype_dataset 不再对 non-retriable cluster error 进行盲重试，同时输出要求的控制台诊断日志与 metadata 摘要。",
+      "status": "passed",
+      "evidence": [
+        "Controlled reproduction using a fake facade that always raises ValueError('No relationships match the provided condition. Cannot form clusters.') caused _generate_with_retry(...) to raise NonRetriableQueryTypeGenerationError after exactly one facade call (no blind retry).",
+        "Captured console output included a QUERYTYPE BATCH generation_error line with retriable=False, category=cluster_missing, and reason=knowledge_graph_relationship_or_cluster_unavailable.",
+        "build_querytype_dataset.py now logs pre_generate and generation_done batch events including requested_counts, available_query_types, effective_counts, fallback_events, and generated_counts.",
+        "Manifest-writing code includes requested_query_type_counts, effective_query_type_counts, generated_query_type_counts, availability_probe_summary, fallback_event_summary, and non_retriable_failure_summary."
+      ],
+      "notes": "The deterministic cluster-failure path now short-circuits retry and exposes the required diagnostics/metadata summary."
+    },
+    {
+      "id": "V-011",
+      "related_todo": "T-011",
+      "type": "integration",
+      "description": "验证 --enable-multi-file 的行为与合同一致：要么实际参与 batch 组装，要么在不能形成 multi-file batch 时打印明确 fallback 日志并记录 metadata。",
+      "status": "passed",
+      "evidence": [
+        "_build_generation_batches(...) with two different file batches and enable_multi_file=True produced summary mode='mixed_multi_file' and a merged batch with batch_mode='multi_file' and source_file_ids=['f1','f2'].",
+        "_build_generation_batches(...) with only one file batch and enable_multi_file=True produced batch_mode='single_file_fallback' with multi_file_fallback_reason='no_partner_file_batch'.",
+        "Captured pre_generate logging for the fallback case printed batch_mode=single_file_fallback instead of silently degrading.",
+        "_to_samples(...) preserves batch_mode and source_file_ids/source_file_names in sample metadata, making the fallback/merged mode observable downstream."
+      ],
+      "notes": "enable-multi-file now has executable batch behavior and observable fallback, rather than metadata-only no-op behavior."
+    },
+    {
+      "id": "V-012",
+      "related_todo": "T-012",
+      "type": "manual",
+      "description": "验证文档已准确描述 probe、fallback、非重试错误分类、诊断日志和 multi-file 行为，且明确不涉及 Phase C scorer/reporter/retrieval metric redesign。",
+      "status": "passed",
+      "evidence": [
+        "docs/Evals????.md section 'S003 ??????deterministic cluster failure?' documents probe, non-retriable handling, fallback/reallocation, diagnostics fields, manifest metadata summaries, and multi-file behavior.",
+        "The document explicitly includes the non-retriable cluster messages and instructs users to observe QUERYTYPE BATCH logs and manifest summaries.",
+        "The document still states that retrieval_scorer.py redesign, ragas_scorer.py/reporter.py redesign, and Phase C metric redesign remain out of scope.",
+        "CLI help for both build_querytype_dataset.py and build_synthetic_dataset.py succeeded, matching the documented parameter surface and preserving legacy synthetic CLI compatibility."
+      ],
+      "notes": "Documentation and CLI surface are consistent with the S003 runtime behavior and scope boundaries."
+    }
+  ]
+}
