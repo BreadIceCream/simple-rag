@@ -95,9 +95,9 @@ class GetDocsPageInput(BaseModel):
 
 SET_ORIGINAL_QUESTION_PROMPT = (
     "你是一个对话助手，负责判断是否需要更新用户的原始问题。流程如下：\n"
-    "1. 根据对话历史，判断上一个问题是否已解决。\n"
-    "2. 若未解决，且用户未提出新问题，则 original_question 保持不变，回答 'keep'。\n"
-    "3. 若已解决，或用户提出新问题，则重新设置 original_question。回答 'update'。\n"
+    "1. 查看用户最新的消息(HumanMessage)，并进行意图识别：用户是否提出了一个新的问题，还是在指引AI继续完成上一个问题。"
+    "2. 若用户未提出新问题，或者用户是在告知AI继续完成上一个问题，则 original_question 保持不变，回答 'keep'。\n"
+    "3. 若用户明确提出了一个新问题，则重新设置 original_question。回答 'update'。\n"
     "以下是对话历史: \n\n{history}\n\n"
     "以下是上一个问题: \n\n{last_question}\n\n"
     "直接给出 'keep' 或 'update' 的二元答案，严禁任何额外的说明或引导语。"
@@ -152,9 +152,9 @@ SUMMARIZE_CONVERSATION_PROMPT = (
 
 DECIDE_SYSTEM_PROMPT = (
     "你是一个智能助手，可以回答用户的问题。\n"
-    "当用户的问题需要查阅文档知识库时，请调用工具检索相关文档。\n"
-    "对于日常问候、闲聊或你已知的通用知识，请直接回答，无需检索。\n"
-    "可参考的文档信息: \n{file_info}\n"
+    "当用户的问题需要查阅文档知识库时，请调用工具检索相关文档。调用工具可能会出错，你需要根据错误信息进行调整或处理。\n"
+    "对于日常问候、闲聊，请直接回答，无需检索。\n"
+    "以下是可参考的文档信息: \n{file_info}\n"
 )
 
 GENERATE_TITLE_PROMPT = (
@@ -305,6 +305,8 @@ class Graph:
         # 系统提示词（含历史摘要）
         summary = state.get("summary", "")
         current_file_infos = HybridPDRetrieverFactory.get_instance().get_file_infos()
+        if not current_file_infos:
+            current_file_infos = "当前没有设置可参考的文档"
         system_content = DECIDE_SYSTEM_PROMPT.format(file_info=current_file_infos)
         if summary:
             system_content += f"\n\n以下是之前对话的摘要，请参考:\n{summary}"

@@ -97,6 +97,7 @@ async def chat(
         original_question = None
         graph_messages = [serialize_langchain_message(HumanMessage(content=message))]
         graph_events = []
+        do_retrieve = False
 
         try:
             # 如果是异常恢复，inputs 传 None
@@ -126,6 +127,9 @@ async def chat(
                 elif mode == "updates":
                     # 节点状态更新: chunk 格式为 {node_name: {state_updates}}
                     for node_name, updates in chunk.items():
+                        if node_name == "retrieve":
+                            # 执行了retrieve操作(ToolNode)
+                            do_retrieve = True
                         # updates是状态更新信息，可能为空（即没有状态更新），需要判断
                         if not updates or not isinstance(updates, dict):
                             continue
@@ -180,25 +184,27 @@ async def chat(
                 )
                 yield f"data: {response_obj.model_dump_json()}\n\n"
 
-                actual_contexts = [doc.page_content for doc in parent_docs if getattr(doc, "page_content", "")]
-                latency_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
-                effective_user_input = str(original_question or message)
-                online_eval_record = build_online_eval_record(
-                    request_id=request_id,
-                    conversation_id=conversation_id_str,
-                    thread_id=conversation_id_str,
-                    user_input=effective_user_input,
-                    actual_response=final_answer,
-                    actual_contexts=actual_contexts,
-                    actual_doc_ids=parent_doc_ids,
-                    actual_file_ids=file_ids,
-                    latency_ms=latency_ms,
-                    rewrite_count=rewrite_count,
-                    generate_count=generate_count,
-                    graph_messages=graph_messages,
-                    graph_events=graph_events,
-                )
-                schedule_online_rag_evaluation(online_eval_record)
+                if do_retrieve:
+                    # 如果调用了retrieve工具，才进行评估
+                    actual_contexts = [doc.page_content for doc in parent_docs]
+                    latency_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
+                    effective_user_input = str(original_question or message)
+                    online_eval_record = build_online_eval_record(
+                        request_id=request_id,
+                        conversation_id=conversation_id_str,
+                        thread_id=conversation_id_str,
+                        user_input=effective_user_input,
+                        actual_response=final_answer,
+                        actual_contexts=actual_contexts,
+                        actual_doc_ids=parent_doc_ids,
+                        actual_file_ids=file_ids,
+                        latency_ms=latency_ms,
+                        rewrite_count=rewrite_count,
+                        generate_count=generate_count,
+                        graph_messages=graph_messages,
+                        graph_events=graph_events,
+                    )
+                    schedule_online_rag_evaluation(online_eval_record)
 
             yield f"data: {SseDoneVO().model_dump_json()}\n\n"
             # 正常完成，清空 checkpoint_id

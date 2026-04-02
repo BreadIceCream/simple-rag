@@ -53,4 +53,4 @@ debug:
   enabled: true
   docling_front: true
   trafilatura_front: true
-  graph_visualization: true
+  graph_visualization: false

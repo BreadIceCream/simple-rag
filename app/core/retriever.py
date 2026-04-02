@@ -838,19 +838,22 @@ class HybridPDRetriever(EnsembleRetriever):
     def _get_bm25_retriever(self) -> BaseRetriever:
         if self._bm25_retriever is None:
             raise RuntimeError("BM25Retriever has not been initialized. "
-                               "Call reset_file_ids() first.")
+                               "Call reset_file_ids() first. "
+                               "This error occurs because the reference document has not been set up.")
         return self._bm25_retriever
 
     def _get_pd_retriever(self) -> EnhancedParentDocumentRetriever:
         if self._pd_retriever is None:
             raise RuntimeError("EnhancedParentDocumentRetriever has not been initialized. "
-                               "Call reset_file_ids() first.")
+                               "Call reset_file_ids() first. "
+                               "This error occurs because the reference document has not been set up.")
         return self._pd_retriever
 
     def _get_retrieval_k_params(self) -> RetrievalKParams:
         if self._retrieval_k_params is None:
             raise RuntimeError("Retrieval parameters have not been initialized. "
-                               "Call reset_file_ids() first.")
+                               "Call reset_file_ids() first. "
+                               "This error occurs because the reference document has not been set up.")
         return self._retrieval_k_params
 
     def _prepare_retrieval(self, input: str, k_params: RetrievalKParams, **kwargs) -> SearchKwargs:
