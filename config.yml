@@ -38,6 +38,7 @@ retriever:
   final_k: 8
   reranker:
     enabled: true
+    max_candidates: 20
 
 chat:
   max_rewrite_time: 2

@@ -12,7 +12,7 @@ _JSONL_WRITE_LOCK = threading.Lock()
 
 
 def online_eval_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent / "store" / "evals" / "online"
+    return Path(__file__).resolve().parent.parent.parent.parent / "store" / "evals" / "online"
 
 
 def online_eval_day_dir(created_at: str | None = None) -> Path:
