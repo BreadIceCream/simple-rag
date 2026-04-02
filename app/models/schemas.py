@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, DateTime, JSON, Text
+from sqlalchemy import String, Integer, DateTime, JSON, Text, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -56,3 +56,47 @@ class ChatHistory(Base):
 
     def __repr__(self):
         return f"<ChatHistory(id={self.id}, conversation_id={self.conversation_id}, role={self.role})>"
+
+
+class OnlineEvalRun(Base):
+    __tablename__ = "online_eval_run"
+
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True, comment="Unique request id")
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="Conversation id")
+    thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="Thread id")
+    event_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True, comment="Request event date")
+    request_created_at: Mapped[str] = mapped_column(String(32), nullable=False, comment="Request created timestamp")
+    evaluation_created_at: Mapped[str] = mapped_column(String(32), nullable=True, comment="Evaluation created timestamp")
+    query_type: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown", index=True, comment="Query type")
+    hop_count: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown", comment="Hop count")
+    abstraction_level: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown", comment="Abstraction level")
+    query_type_source: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown", comment="Query type source")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", index=True, comment="Evaluation status")
+    latency_ms: Mapped[float] = mapped_column(Float, nullable=True, comment="Request latency milliseconds")
+    rewrite_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Rewrite count")
+    generate_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Generate count")
+    retrieved_doc_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Retrieved document count")
+    retrieved_file_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Retrieved file count")
+    retrieved_context_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Retrieved context count")
+    graph_message_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Graph message count")
+    graph_event_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Graph event count")
+    query_type_confidence: Mapped[float] = mapped_column(Float, nullable=True, comment="Query type confidence")
+    successful_metric_count: Mapped[int] = mapped_column(Integer, nullable=True, comment="Successful metric count")
+    metric_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=True, comment="Metric timeout seconds")
+    user_input: Mapped[str] = mapped_column(Text, nullable=False, comment="User input")
+    actual_response: Mapped[str] = mapped_column(Text, nullable=False, comment="Actual response")
+    reference_answer: Mapped[str] = mapped_column(Text, nullable=True, comment="Reference answer")
+    error_message: Mapped[str] = mapped_column(Text, nullable=True, comment="Evaluation error message")
+    actual_contexts: Mapped[list] = mapped_column(JSON, default=list, comment="Retrieved contexts")
+    actual_doc_ids: Mapped[list] = mapped_column(JSON, default=list, comment="Retrieved document ids")
+    actual_file_ids: Mapped[list] = mapped_column(JSON, default=list, comment="Retrieved file ids")
+    graph_messages: Mapped[list] = mapped_column(JSON, default=list, comment="Graph messages")
+    graph_events: Mapped[list] = mapped_column(JSON, default=list, comment="Graph events")
+    reference_contexts: Mapped[list] = mapped_column(JSON, default=list, comment="Reference contexts")
+    reference_context_ids: Mapped[list] = mapped_column(JSON, default=list, comment="Reference context ids")
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict, comment="Metric values")
+    skipped_metrics: Mapped[list] = mapped_column(JSON, default=list, comment="Skipped metric names")
+    query_type_reasons: Mapped[list] = mapped_column(JSON, default=list, comment="Query type reasons")
+    metric_names: Mapped[list] = mapped_column(JSON, default=list, comment="Requested metric names")
+    metric_failures: Mapped[dict] = mapped_column(JSON, default=dict, comment="Metric failures")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, comment="Additional metadata")

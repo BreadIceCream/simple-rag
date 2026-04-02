@@ -3,8 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from app.evals.metrics_registry import default_retrieval_k_values
-from app.evals.schema import EvalRunRecord
+from app.evals.offline.metrics_registry import default_retrieval_k_values
+from app.evals.offline.schema import EvalRunRecord
 
 
 def _binary_relevance(actual_doc_ids: list[str], reference_doc_ids: list[str], k: int) -> list[int]:

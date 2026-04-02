@@ -7,10 +7,10 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.evals.dataset_builder import load_dataset
-from app.evals.reporter import new_run_dir, write_run_artifacts
-from app.evals.runtime import close_eval_runtime, get_documents_by_ids, init_eval_runtime
-from app.evals.schema import EvalRunRecord
+from app.evals.offline.dataset_builder import load_dataset
+from app.evals.offline.reporter import new_run_dir, write_run_artifacts
+from app.evals.offline.runtime import close_eval_runtime, get_documents_by_ids, init_eval_runtime
+from app.evals.offline.schema import EvalRunRecord
 
 
 def _parse_args() -> argparse.Namespace:

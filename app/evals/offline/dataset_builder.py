@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from app.evals.schema import (
+from app.evals.offline.schema import (
     EvalDatasetManifest,
     EvalSample,
     dataset_dir,

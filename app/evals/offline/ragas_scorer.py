@@ -9,15 +9,15 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from app.config.global_config import global_config
-from app.evals.metrics_registry import select_ragas_metrics
-from app.evals.reporter import (
+from app.evals.offline.metrics_registry import select_ragas_metrics
+from app.evals.offline.reporter import (
     load_run_records,
     write_item_scores_csv,
     write_report_markdown,
     write_summary,
 )
-from app.evals.retrieval_scorer import score_retrieval_metrics
-from app.evals.runtime import close_eval_runtime, init_eval_runtime
+from app.evals.offline.retrieval_scorer import score_retrieval_metrics
+from app.evals.offline.runtime import close_eval_runtime, init_eval_runtime
 
 
 class CorrectnessVerdict(BaseModel):

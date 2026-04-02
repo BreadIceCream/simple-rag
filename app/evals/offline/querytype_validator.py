@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from app.evals.schema import EvalSample
+from app.evals.offline.schema import EvalSample
 
 _ALLOWED_QUERY_TYPES = {
     "single_hop_specific",

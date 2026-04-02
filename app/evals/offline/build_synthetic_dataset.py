@@ -13,9 +13,9 @@ from langchain_core.language_models import BaseChatModel
 
 from app.config.db_config import DatabaseManager
 from app.config.global_config import global_config
-from app.evals.dataset_builder import build_manifest, format_build_report, save_dataset
-from app.evals.runtime import close_eval_runtime, init_eval_runtime
-from app.evals.schema import EvalSample
+from app.evals.offline.dataset_builder import build_manifest, format_build_report, save_dataset
+from app.evals.offline.runtime import close_eval_runtime, init_eval_runtime
+from app.evals.offline.schema import EvalSample
 from app.models.schemas import EmbeddedDocument
 
 

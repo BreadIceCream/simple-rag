@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.evals.schema import EvalDatasetManifest, EvalRunRecord, read_jsonl, write_jsonl
+from app.evals.offline.schema import EvalDatasetManifest, EvalRunRecord, read_jsonl, write_jsonl
 
 
 def experiment_root() -> Path:

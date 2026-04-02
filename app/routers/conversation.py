@@ -5,13 +5,14 @@
 """
 import asyncio
 import json
+import time
 import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends
 from fastapi.params import Query, Path
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,8 @@ from app.config.db_config import DatabaseManager
 from app.core.graph import Graph
 from app.core.retriever import EnhancedParentDocumentRetrieverFactory
 from app.crud import conversation as conv_crud, document
+from app.evals.online.online_graph_capture import build_online_eval_record, serialize_langchain_message
+from app.evals.online.online_ragas_service import schedule_online_rag_evaluation
 from app.exception.exception import CustomException
 from app.models.common import Result, ConversationVO, ChatMessageVO, ChatHistoryResponseVO, ChatReferenceParentDocVO, \
     ChatReferenceVO, SseTokenVO, SseAnswerVO, SseErrorVO, SseDoneVO, SseConversationVO
@@ -88,6 +91,12 @@ async def chat(
         parent_doc_ids = []  # 存储检索到的文档 ID 有序无重复列表
         parent_docs = [] # 存储检索到的文档对象列表，保持与 parent_doc_ids 顺序一致
         file_ids = [] # 存储涉及的文件 ID 有序无重复列表
+        request_id = uuid.uuid4().hex
+        request_started = time.perf_counter()
+        rewrite_count = None
+        generate_count = None
+        graph_messages = [serialize_langchain_message(HumanMessage(content=message))]
+        graph_events = []
 
         try:
             # 如果是异常恢复，inputs 传 None
@@ -111,6 +120,8 @@ async def chat(
 
                 elif mode == "custom":
                     # writer 发出的自定义事件 (dict)
+                    if isinstance(chunk, dict):
+                        graph_events.append(dict(chunk))
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
                 elif mode == "updates":
@@ -130,8 +141,18 @@ async def chat(
                         # 提取最终 AI 回复
                         if "messages" in updates:
                             for msg in updates["messages"]:
+                                if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
+                                    graph_messages.append(serialize_langchain_message(msg))
                                 if isinstance(msg, AIMessage) and msg.content:
                                     final_answer = msg.content
+
+            try:
+                state_snapshot = graph.get_state(config)
+                values = getattr(state_snapshot, "values", {}) or {}
+                rewrite_count = values.get("rewrite_count")
+                generate_count = values.get("generate_count")
+            except Exception as state_error:
+                print(f"GRAPH: failed to collect state snapshot for online eval: {state_error}")
 
             # ---- graph 执行完毕，持久化对话历史 ----
 
@@ -158,6 +179,25 @@ async def chat(
                     conversation_id=conversation_id_str
                 )
                 yield f"data: {response_obj.model_dump_json()}\n\n"
+
+                actual_contexts = [doc.page_content for doc in parent_docs if getattr(doc, "page_content", "")]
+                latency_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
+                online_eval_record = build_online_eval_record(
+                    request_id=request_id,
+                    conversation_id=conversation_id_str,
+                    thread_id=conversation_id_str,
+                    user_input=message,
+                    actual_response=final_answer,
+                    actual_contexts=actual_contexts,
+                    actual_doc_ids=parent_doc_ids,
+                    actual_file_ids=file_ids,
+                    latency_ms=latency_ms,
+                    rewrite_count=rewrite_count,
+                    generate_count=generate_count,
+                    graph_messages=graph_messages,
+                    graph_events=graph_events,
+                )
+                schedule_online_rag_evaluation(online_eval_record)
 
             yield f"data: {SseDoneVO().model_dump_json()}\n\n"
             # 正常完成，清空 checkpoint_id

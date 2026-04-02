@@ -3,8 +3,8 @@
 import argparse
 from pathlib import Path
 
-from app.evals.dataset_builder import build_manifest, format_build_report, save_dataset
-from app.evals.schema import EvalSample, read_json, read_jsonl
+from app.evals.offline.dataset_builder import build_manifest, format_build_report, save_dataset
+from app.evals.offline.schema import EvalSample, read_json, read_jsonl
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,7 +46,7 @@ def _ordered_unique(values: list[str]) -> list[str]:
 
 
 def _infer_scope_file_ids(reference_doc_ids: list[str]) -> list[str]:
-    from app.evals.runtime import get_parent_chunks_by_ids
+    from app.evals.offline.runtime import get_parent_chunks_by_ids
 
     file_ids: list[str] = []
     for _, parent_doc in get_parent_chunks_by_ids(reference_doc_ids):
@@ -73,7 +73,7 @@ def main() -> None:
     default_scope: list[str] = []
     runtime_started = False
     if needs_runtime:
-        from app.evals.runtime import close_eval_runtime, get_all_document_ids, init_eval_runtime
+        from app.evals.offline.runtime import close_eval_runtime, get_all_document_ids, init_eval_runtime
 
         init_eval_runtime("dataset_seed")
         runtime_started = True

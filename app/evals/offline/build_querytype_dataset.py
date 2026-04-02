@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config.global_config import global_config
-from app.evals.build_synthetic_dataset import (
+from app.evals.offline.build_synthetic_dataset import (
     _build_ragas_run_config,
     _init_generation_llm,
     _iter_sub_batches,
@@ -18,8 +18,8 @@ from app.evals.build_synthetic_dataset import (
     _resolve_dynamic_chunk_limit,
     _resolve_testset_generator,
 )
-from app.evals.dataset_builder import build_manifest, format_build_report, save_dataset
-from app.evals.querytype_synthesizers import (
+from app.evals.offline.dataset_builder import build_manifest, format_build_report, save_dataset
+from app.evals.offline.querytype_synthesizers import (
     QUERY_TYPES,
     QueryTypeSynthesizerFacade,
     allocate_query_type_counts,
@@ -28,9 +28,9 @@ from app.evals.querytype_synthesizers import (
     reallocate_query_type_counts,
     resolve_query_distribution,
 )
-from app.evals.querytype_validator import QueryTypeValidator
-from app.evals.runtime import close_eval_runtime, init_eval_runtime
-from app.evals.schema import EvalSample
+from app.evals.offline.querytype_validator import QueryTypeValidator
+from app.evals.offline.runtime import close_eval_runtime, init_eval_runtime
+from app.evals.offline.schema import EvalSample
 
 
 @dataclass

@@ -4,7 +4,7 @@ import importlib
 from dataclasses import dataclass
 from typing import Any
 
-from app.evals.build_synthetic_dataset import _generate_with_chunks, _to_rows
+from app.evals.offline.build_synthetic_dataset import _generate_with_chunks, _to_rows
 
 QUERY_TYPES = (
     "single_hop_specific",
