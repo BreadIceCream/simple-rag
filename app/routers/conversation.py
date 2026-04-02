@@ -75,9 +75,8 @@ async def chat(
             is_resuming = True
             config["configurable"]["checkpoint_id"] = conv.checkpoint_id
 
-    # 存储用户消息，如果是恢复执行，说明已经是原来那条消息导致异常，消息已存储过，跳过存储
-    if not is_resuming:
-        await conv_crud.add_chat_message(conversation_id_str, "user", message, [], db)
+    # 存储用户消息，无论是否为异常处理，都存储到数据库中
+    await conv_crud.add_chat_message(conversation_id_str, "user", message, [], db)
 
     async def event_stream():
         """SSE 事件流生成器"""
@@ -101,9 +100,8 @@ async def chat(
 
         try:
             # 如果是异常恢复，inputs 传 None
-            stream_inputs = None if is_resuming else inputs
             for mode, chunk in graph.stream(
-                stream_inputs,
+                inputs,
                 config,
                 stream_mode=["custom", "updates", "messages"],
             ):

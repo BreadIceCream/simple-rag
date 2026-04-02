@@ -44,6 +44,7 @@ chat:
   max_rewrite_time: 2
   max_generate_time: 3
   conversation_summarize_threshold: 10
+  rounds_to_keep: 3
 
 # 文本文件长度阈值，超过该长度的文本文件将启用parent_splitter
 text_file_length_threshold: 1500
@@ -52,4 +53,4 @@ debug:
   enabled: true
   docling_front: true
   trafilatura_front: true
-  graph_visualization: false
+  graph_visualization: true

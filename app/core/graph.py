@@ -20,7 +20,7 @@ import asyncio
 from typing import Literal
 
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage, RemoveMessage, ToolMessage, SystemMessage
+from langchain_core.messages import HumanMessage, RemoveMessage, ToolMessage, SystemMessage, BaseMessage, AIMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.config import get_stream_writer
@@ -55,6 +55,28 @@ def _serialize_docs(docs: list) -> str:
         for doc in docs
     )
 
+def _simplify_messages(messages: list[BaseMessage]) -> list[str]:
+    """
+    简化历史Messages，仅保留必要的信息元数据，截断ToolMessage的内容，返回简化后的Message字符串
+    :param messages:
+    :return: 全新的简化的Messages字符串列表
+    """
+    simplified_messages = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            # HumanMessage仅保留content
+            simplified_messages.append(f"HumanMessage: {message.content}")
+        elif isinstance(message, ToolMessage):
+            # ToolMessage截断100个字符
+            simplified_messages.append(f"ToolMessage: {message.content[:100]}...")
+        elif isinstance(message, AIMessage):
+            # 查看是否有tool_calls，若有则作为信息，否则采用message.content
+            if message.tool_calls:
+                simplified_messages.append(f"AIMessage: Use tools. {message.tool_calls}")
+            else:
+                simplified_messages.append(f"AIMessage: {message.content}")
+        # 其他类型的信息不保留
+    return simplified_messages
 
 # ======================== Tool Schema 定义 ========================
 
@@ -351,7 +373,14 @@ class Graph:
         init_state = {"documents": [], "rewrite_count": 0, "generate_count": 0}
 
         # 判断是否需要更新原始问题
-        prompt = SET_ORIGINAL_QUESTION_PROMPT.format(history=state.get("messages", []), last_question=state.get("original_question", ""))
+        if not state.get("original_question"):
+            # 没有原始问题，直接更新
+            init_state.update({"original_question": state.get("messages", [])[-1].content})
+            return init_state
+
+        # 获取历史对话信息，进行简化，仅保留必要的内容
+        simplified_messages = _simplify_messages(messages=state.get("messages", []))
+        prompt = SET_ORIGINAL_QUESTION_PROMPT.format(history=simplified_messages, last_question=state.get("original_question", ""))
         response = cls._light_llm.with_structured_output(SetOriginalQuestion).invoke([HumanMessage(content=prompt)])
 
         if response.binary_score == "update":
@@ -363,12 +392,13 @@ class Graph:
     def compact_tool_messages(cls, state: GraphState):
         """
         替换历史轮次中的 ToolMessage 内容为占位文本。仅保留
-        每次进入该节点时都会执行，最近2轮的 ToolMessage 不替换。
+        每次进入该节点时都会执行，最近rounds_to_keep轮的 ToolMessage 不替换。
         一轮对话 = 一条 HumanMessage 及其后续所有非 HumanMessage 消息。
         """
         writer = get_stream_writer()
         writer({cls._event_description: "Compact previous tool messages...", cls._status_key: "progress"})
 
+        rounds_to_keep = cls._chat_config.get("rounds_to_keep")
         messages = state["messages"]
 
         # 1. 剔除 SystemMessage，按 HumanMessage 分割对话轮次
@@ -380,13 +410,12 @@ class Graph:
             elif rounds:
                 rounds[-1].append(msg)
 
-        if len(rounds) <= 2:
-            # 不足3轮，无需替换
+        if len(rounds) <= rounds_to_keep:
             return {}
 
-        # 替换历史轮次的 ToolMessage 内容，仅保留最近2轮的原始 ToolMessage
+        # 替换历史轮次的 ToolMessage 内容
         replaced_tool_messages = []
-        rounds_to_replace = rounds[:-2]
+        rounds_to_replace = rounds[:-rounds_to_keep]
 
         for r in rounds_to_replace:
             # 获取要替换的对话轮中的 ToolMessage
@@ -408,7 +437,7 @@ class Graph:
     def summarize_conversation(cls, state: GraphState):
         """
         对话摘要节点: 当对话轮次超过 conversation_summarize_threshold 时，
-        摘要旧消息以管理短期记忆。保留最近 2 轮原始消息，仅压缩更早的轮次。
+        摘要旧消息以管理短期记忆。保留最近 rounds_to_keep 轮原始消息，仅压缩更早的轮次。
         SystemMessage 不参与轮次计数和摘要。
         """
         messages = state["messages"]
@@ -430,8 +459,9 @@ class Graph:
         writer = get_stream_writer()
         writer({cls._event_description: "Summarizing conversation history...", cls._status_key: "progress"})
 
-        # 2. 划分：需要压缩的轮次 vs 保留的最近 2 轮
-        rounds_to_summarize = rounds[:-2]
+        # 2. 划分：需要压缩的轮次 vs 保留的最近 n 轮
+        rounds_to_keep = cls._chat_config.get("rounds_to_keep")
+        rounds_to_summarize = rounds[:-rounds_to_keep]
 
         # 3. 构建摘要输入，ToolMessage 内容替换为占位符
         # 要 summarize 的消息和要 delete 相同
@@ -706,11 +736,11 @@ class Graph:
 
         # ---- 添加边 ----
 
-        # START → init_graph_state → compact_tool_messages → summarize_conversation → decide_retrieve_or_respond
-        workflow.add_edge(START, "init_graph_state")
-        workflow.add_edge("init_graph_state", "compact_tool_messages")
+        # START → compact_tool_messages → summarize_conversation → init_graph_state →  decide_retrieve_or_respond
+        workflow.add_edge(START, "compact_tool_messages")
         workflow.add_edge("compact_tool_messages", "summarize_conversation")
-        workflow.add_edge("summarize_conversation", "decide_retrieve_or_respond")
+        workflow.add_edge("summarize_conversation", "init_graph_state")
+        workflow.add_edge("init_graph_state", "decide_retrieve_or_respond")
 
         # decide_retrieve_or_respond → (tools_condition) → retrieve 或直接回答 END
         workflow.add_conditional_edges(
