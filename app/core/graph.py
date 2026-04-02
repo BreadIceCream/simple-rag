@@ -362,8 +362,8 @@ class Graph:
     @classmethod
     def compact_tool_messages(cls, state: GraphState):
         """
-        替换历史轮次中的 ToolMessage 内容为占位文本。
-        每次进入该节点时都会执行，最新一轮的 ToolMessage 不替换。
+        替换历史轮次中的 ToolMessage 内容为占位文本。仅保留
+        每次进入该节点时都会执行，最近2轮的 ToolMessage 不替换。
         一轮对话 = 一条 HumanMessage 及其后续所有非 HumanMessage 消息。
         """
         writer = get_stream_writer()
@@ -371,16 +371,33 @@ class Graph:
 
         messages = state["messages"]
 
-        # 替换历史轮次的所有 ToolMessage 内容
+        # 1. 剔除 SystemMessage，按 HumanMessage 分割对话轮次
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        rounds: list[list] = []
+        for msg in non_system_msgs:
+            if isinstance(msg, HumanMessage):
+                rounds.append([msg])
+            elif rounds:
+                rounds[-1].append(msg)
+
+        if len(rounds) <= 2:
+            # 不足3轮，无需替换
+            return {}
+
+        # 替换历史轮次的 ToolMessage 内容，仅保留最近2轮的原始 ToolMessage
         replaced_tool_messages = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage) and msg.content != TOOL_PLACEHOLDER:
-                replaced_tool_messages.append(ToolMessage(
-                    content=TOOL_PLACEHOLDER,
-                    name=msg.name,
-                    tool_call_id=msg.tool_call_id,
-                    id=msg.id,
-                ))
+        rounds_to_replace = rounds[:-2]
+
+        for r in rounds_to_replace:
+            # 获取要替换的对话轮中的 ToolMessage
+            for msg in r:
+                if isinstance(msg, ToolMessage) and msg.content != TOOL_PLACEHOLDER:
+                    replaced_tool_messages.append(ToolMessage(
+                        content=TOOL_PLACEHOLDER,
+                        name=msg.name,
+                        tool_call_id=msg.tool_call_id,
+                        id=msg.id,
+                    ))
 
         if replaced_tool_messages:
             return {"messages": replaced_tool_messages}
