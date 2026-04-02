@@ -1144,9 +1144,11 @@ class HybridPDRetriever(EnsembleRetriever):
                 f"skipping reranking step.")
             return parent_docs
 
-        print(f"HYBRID PD RETRIEVER INVOKE: Reranking {len(parent_docs)} parent docs...")
+        max_candidates = self._retriever_config.get("reranker", {}).get("max_candidates", 20)
+        candidates = parent_docs[:max_candidates]
+        print(f"HYBRID PD RETRIEVER INVOKE: Reranking {len(candidates)} parent docs...")
         reranker = RerankerFactory.get_instance()
-        reranked_docs = reranker.compress_documents(parent_docs, input)
+        reranked_docs = reranker.compress_documents(candidates, input)
         return list(reranked_docs[:k_params.final_k])
 
     async def ainvoke(
