@@ -95,6 +95,7 @@ async def chat(
         request_started = time.perf_counter()
         rewrite_count = None
         generate_count = None
+        original_question = None
         graph_messages = [serialize_langchain_message(HumanMessage(content=message))]
         graph_events = []
 
@@ -149,6 +150,7 @@ async def chat(
             try:
                 state_snapshot = graph.get_state(config)
                 values = getattr(state_snapshot, "values", {}) or {}
+                original_question = values.get("original_question")
                 rewrite_count = values.get("rewrite_count")
                 generate_count = values.get("generate_count")
             except Exception as state_error:
@@ -182,11 +184,12 @@ async def chat(
 
                 actual_contexts = [doc.page_content for doc in parent_docs if getattr(doc, "page_content", "")]
                 latency_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
+                effective_user_input = str(original_question or message)
                 online_eval_record = build_online_eval_record(
                     request_id=request_id,
                     conversation_id=conversation_id_str,
                     thread_id=conversation_id_str,
-                    user_input=message,
+                    user_input=effective_user_input,
                     actual_response=final_answer,
                     actual_contexts=actual_contexts,
                     actual_doc_ids=parent_doc_ids,
